@@ -1,0 +1,38 @@
+[project]
+name = "atlas"
+version = "0.2.0"
+description = "Agent runtime, registry, and composition engine"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+    "jsonschema>=4.20",
+    "aiosqlite>=0.20",
+    "typer>=0.15",
+]
+
+[project.optional-dependencies]
+llm = [
+    "anthropic>=0.40",
+]
+serve = [
+    "aiohttp>=3.9",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.2",
+]
+
+[project.scripts]
+atlas = "atlas.cli.app:app"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["atlas*"]

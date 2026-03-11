@@ -1,0 +1,39 @@
+agent:
+  name: "summarizer"
+  version: "1.0.0"
+  description: "Summarizes text input to a target length"
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+          description: "The text to summarize"
+        max_length:
+          type: integer
+          default: 200
+      required: [text]
+
+  output:
+    schema:
+      type: object
+      properties:
+        summary:
+          type: string
+        token_count:
+          type: integer
+      required: [summary, token_count]
+
+  capabilities:
+    - text-processing
+    - summarization
+
+  model:
+    preference: "fast"
+    override_allowed: true
+
+  requires:
+    platform_tools: false
+    spawn_agents: false
+    skills: []

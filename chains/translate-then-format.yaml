@@ -1,0 +1,14 @@
+chain:
+  name: "translate-then-format"
+  description: "Translate text then format the result"
+
+  steps:
+    - agent: "translator"
+      input_map:
+        text: "$.trigger.text"
+        target_lang: "$.trigger.target_lang"
+
+    - agent: "formatter"
+      input_map:
+        content: "$.steps[0].output.translated_text"
+        style: "markdown"

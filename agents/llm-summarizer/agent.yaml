@@ -1,0 +1,33 @@
+agent:
+  name: "llm-summarizer"
+  version: "1.0.0"
+  description: "Summarizes text using an LLM. Returns a concise summary."
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+        max_sentences:
+          type: integer
+      required: [text]
+
+  output:
+    schema:
+      type: object
+      properties:
+        summary:
+          type: string
+        model:
+          type: string
+      required: [summary, model]
+
+  capabilities:
+    - summarization
+    - text-processing
+    - llm
+
+  model:
+    preference: "fast"
+    override_allowed: true

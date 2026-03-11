@@ -1,0 +1,39 @@
+agent:
+  name: "translator"
+  version: "1.0.0"
+  description: "Translates text to a target language (stub implementation)"
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+        target_lang:
+          type: string
+      required: [text, target_lang]
+
+  output:
+    schema:
+      type: object
+      properties:
+        translated_text:
+          type: string
+        source_lang:
+          type: string
+        target_lang:
+          type: string
+      required: [translated_text, source_lang, target_lang]
+
+  capabilities:
+    - translation
+    - text-processing
+
+  model:
+    preference: "balanced"
+    override_allowed: true
+
+  requires:
+    platform_tools: false
+    spawn_agents: false
+    skills: []

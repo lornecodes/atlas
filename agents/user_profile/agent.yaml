@@ -1,0 +1,42 @@
+agent:
+  name: "user-profile"
+  version: "1.0.0"
+  description: "Processes user profiles with nested address data"
+
+  input:
+    schema:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+            address:
+              type: object
+              properties:
+                city:
+                  type: string
+                zip:
+                  type: string
+              required: [city]
+          required: [name]
+        action:
+          type: string
+      required: [user, action]
+
+  output:
+    schema:
+      type: object
+      properties:
+        status:
+          type: string
+        user_name:
+          type: string
+        city:
+          type: string
+      required: [status, user_name]
+
+  capabilities: [user-management, testing]

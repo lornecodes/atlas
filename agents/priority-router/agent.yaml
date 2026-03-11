@@ -1,0 +1,19 @@
+agent:
+  name: "priority-router"
+  version: "1.0.0"
+  type: "orchestrator"
+  description: "Routes jobs to different model tiers based on input complexity."
+
+  input:
+    schema:
+      type: object
+      properties: {}
+
+  output:
+    schema:
+      type: object
+      properties: {}
+
+  capabilities:
+    - orchestration
+    - routing

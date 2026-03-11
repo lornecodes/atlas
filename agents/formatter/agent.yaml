@@ -1,0 +1,37 @@
+agent:
+  name: "formatter"
+  version: "1.0.0"
+  description: "Formats content in a given style"
+
+  input:
+    schema:
+      type: object
+      properties:
+        content:
+          type: string
+        style:
+          type: string
+      required: [content, style]
+
+  output:
+    schema:
+      type: object
+      properties:
+        formatted:
+          type: string
+        style_applied:
+          type: string
+      required: [formatted, style_applied]
+
+  capabilities:
+    - formatting
+    - text-processing
+
+  model:
+    preference: "fast"
+    override_allowed: true
+
+  requires:
+    platform_tools: false
+    spawn_agents: false
+    skills: []

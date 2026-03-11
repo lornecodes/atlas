@@ -1,0 +1,33 @@
+agent:
+  name: "multi-type"
+  version: "1.0.0"
+  description: "Agent accepting multiple input types"
+
+  input:
+    schema:
+      type: object
+      properties:
+        data:
+          oneOf:
+            - type: string
+            - type: object
+              properties:
+                value:
+                  type: string
+              required: [value]
+        mode:
+          type: string
+          enum: [text, structured]
+      required: [data, mode]
+
+  output:
+    schema:
+      type: object
+      properties:
+        processed:
+          type: string
+        mode_used:
+          type: string
+      required: [processed, mode_used]
+
+  capabilities: [multi-type, testing]

@@ -1,0 +1,37 @@
+agent:
+  name: "llm-classifier"
+  version: "1.0.0"
+  description: "Classifies text into one of the provided categories using an LLM."
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+        categories:
+          type: array
+          items:
+            type: string
+      required: [text, categories]
+
+  output:
+    schema:
+      type: object
+      properties:
+        category:
+          type: string
+        confidence:
+          type: string
+        model:
+          type: string
+      required: [category, confidence, model]
+
+  capabilities:
+    - classification
+    - text-processing
+    - llm
+
+  model:
+    preference: "fast"
+    override_allowed: true

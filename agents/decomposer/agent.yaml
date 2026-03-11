@@ -1,0 +1,31 @@
+agent:
+  name: "decomposer"
+  version: "1.0.0"
+  description: "Decomposes a message into parts and spawns echo for each."
+
+  input:
+    schema:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            type: string
+      required: [messages]
+
+  output:
+    schema:
+      type: object
+      properties:
+        results:
+          type: array
+        count:
+          type: integer
+      required: [results, count]
+
+  capabilities:
+    - decomposition
+    - spawning
+
+  requires:
+    spawn_agents: true

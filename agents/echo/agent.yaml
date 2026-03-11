@@ -1,0 +1,33 @@
+agent:
+  name: "echo"
+  version: "1.0.0"
+  description: "Returns input unchanged. Used for testing the contract round-trip."
+
+  input:
+    schema:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+  output:
+    schema:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+  capabilities:
+    - echo
+    - testing
+
+  model:
+    preference: "fast"
+    override_allowed: true
+
+  requires:
+    platform_tools: false
+    spawn_agents: false
+    skills: []
