@@ -171,9 +171,10 @@ def _load_agent_class(module_path: Path) -> type | None:
     except Exception:
         return None
 
-    # Find the agent class
+    # Find the agent class — prefer classes defined in this module
     from atlas.runtime.base import AgentBase
 
+    candidates = []
     for attr_name in dir(module):
         attr = getattr(module, attr_name)
         if (
@@ -181,5 +182,11 @@ def _load_agent_class(module_path: Path) -> type | None:
             and issubclass(attr, AgentBase)
             and attr is not AgentBase
         ):
-            return attr
-    return None
+            candidates.append(attr)
+
+    if not candidates:
+        return None
+
+    # Prefer classes defined in this module over imported base classes
+    local = [c for c in candidates if c.__module__ == module.__name__]
+    return local[0] if local else candidates[0]

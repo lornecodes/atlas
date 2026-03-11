@@ -12,7 +12,7 @@ from atlas.orchestrator.default import DefaultOrchestrator
 from atlas.orchestrator.protocol import Orchestrator
 from atlas.pool.job import JobData
 from atlas.pool.queue import JobQueue
-from atlas.pool.slot_manager import SlotManager
+from atlas.pool.slot_manager import SlotManager, SlotState
 from atlas.runtime.context import SpawnResult
 
 logger = get_logger(__name__)
@@ -55,6 +55,7 @@ class ExecutionPool:
         self._stopping = False
         self._semaphore: asyncio.Semaphore | None = None
         self._stop_lock = asyncio.Lock()
+        self._spawn_callback = self._make_spawn_callback()
 
     async def start(self) -> None:
         """Start the pool — begins consuming from the queue."""
@@ -165,7 +166,7 @@ class ExecutionPool:
             ctx.job_id = job.id
             ctx.depth = job.metadata.get("_spawn_depth", 0)
             ctx.spawn_allowed = entry.contract.requires.spawn_agents if entry else False
-            ctx._spawn_callback = self._make_spawn_callback()
+            ctx._spawn_callback = self._spawn_callback
 
             # Validate input
             if entry:
@@ -183,7 +184,7 @@ class ExecutionPool:
                     return
 
             # Execute with timeout from contract
-            slot.state = "busy"
+            slot.state = SlotState.BUSY
             exec_start = time.monotonic()
             exec_timeout = entry.contract.execution_timeout if entry else 60.0
             try:
@@ -296,7 +297,12 @@ class ExecutionPool:
 
         if result and result.status == "completed":
             return SpawnResult(success=True, data=result.output_data or {})
-        error = (result.error if result else "Child job timed out") or "Child job failed"
+        if not result:
+            error = "Child job timed out"
+        elif result.error:
+            error = result.error
+        else:
+            error = f"Child job {result.status}"
         return SpawnResult(success=False, error=error)
 
     async def _reaper_loop(self) -> None:

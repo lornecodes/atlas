@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 
@@ -49,25 +50,16 @@ class JobStore:
                 metadata TEXT DEFAULT '{}'
             )
         """)
-        # Migrate existing DBs that lack retry columns
-        try:
-            await self._db.execute(
-                "ALTER TABLE jobs ADD COLUMN retry_count INTEGER DEFAULT 0"
-            )
-        except Exception:
-            pass  # Column already exists
-        try:
-            await self._db.execute(
-                "ALTER TABLE jobs ADD COLUMN original_job_id TEXT DEFAULT ''"
-            )
-        except Exception:
-            pass  # Column already exists
-        try:
-            await self._db.execute(
-                "ALTER TABLE jobs ADD COLUMN metadata TEXT DEFAULT '{}'"
-            )
-        except Exception:
-            pass  # Column already exists
+        # Migrate existing DBs that lack newer columns
+        for col_def in (
+            "retry_count INTEGER DEFAULT 0",
+            "original_job_id TEXT DEFAULT ''",
+            "metadata TEXT DEFAULT '{}'",
+        ):
+            try:
+                await self._db.execute(f"ALTER TABLE jobs ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)"
         )

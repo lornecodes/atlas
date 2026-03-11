@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from atlas.constants import TERMINAL_STATUSES
+
 
 @dataclass
 class JobData:
@@ -44,7 +46,7 @@ class JobData:
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in ("completed", "failed", "cancelled")
+        return self.status in TERMINAL_STATUSES
 
     @property
     def total_ms(self) -> float:

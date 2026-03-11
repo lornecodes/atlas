@@ -10,12 +10,11 @@ from aiohttp import web, WSMsgType
 
 from atlas.app_keys import EVENT_BUS as _EVENT_BUS_KEY, JOB_TO_DICT as _JOB_TO_DICT_KEY
 from atlas.events import EventBus
+from atlas.constants import TERMINAL_STATUSES
 from atlas.logging import get_logger
 from atlas.pool.job import JobData
 
 logger = get_logger(__name__)
-
-_TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 
 def _build_event_frame(
@@ -83,7 +82,7 @@ async def handle_job_events_ws(request: web.Request) -> web.WebSocketResponse:
             return
         frame = _build_event_frame(job, old_status, new_status, job_to_dict)
         await queue.put(frame)
-        if new_status in _TERMINAL:
+        if new_status in TERMINAL_STATUSES:
             await queue.put(None)  # Sentinel to close
 
     bus.subscribe(on_event)

@@ -51,6 +51,10 @@ class AgentContext:
     # Arbitrary metadata from the trigger
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # Dependency injection — agents check here before creating their own
+    # Keys are agent-defined (e.g. "llm_provider", "langchain_chain", "anthropic_client")
+    providers: dict[str, Any] = field(default_factory=dict)
+
     # Spawn callback — injected by the pool, not set by agents
     _spawn_callback: SpawnCallback | None = field(default=None, repr=False)
 

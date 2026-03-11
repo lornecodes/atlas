@@ -72,12 +72,30 @@ class ChainRunner:
         self,
         chain: ChainDefinition,
         trigger_input: dict,
+        *,
+        providers: dict[str, dict[str, Any]] | None = None,
     ) -> ChainResult:
         """Execute a chain, mediating between each step.
 
         The trigger input feeds into step 0. Each subsequent step receives
         mediated output from the previous step.
+
+        Args:
+            providers: Optional per-agent dependency injection. Maps agent
+                names to provider dicts that get set on ``AgentContext.providers``.
+                Example: ``{"claude-writer": {"llm_provider": my_provider}}``
         """
+        # Pre-validate: all agents must exist before we start executing
+        missing = [
+            s.agent_name for s in chain.steps
+            if not self._registry.get(s.agent_name)
+        ]
+        if missing:
+            return ChainResult(
+                success=False,
+                error=f"Chain '{chain.name}' references unknown agents: {', '.join(missing)}",
+            )
+
         steps: list[StepResult] = []
         step_outputs: list[dict] = []
 
@@ -139,7 +157,8 @@ class ChainRunner:
 
                 step_input = mediation_result.data
 
-            # Build context with chain info
+            # Build context with chain info + injected providers
+            agent_providers = (providers or {}).get(step.agent_name, {})
             ctx = AgentContext(
                 chain_name=chain.name,
                 step_index=i,
@@ -147,6 +166,7 @@ class ChainRunner:
                     "trigger": trigger_input,
                     "step_outputs": list(step_outputs),
                 },
+                providers=agent_providers,
             )
 
             # Execute the agent

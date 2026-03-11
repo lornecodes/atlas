@@ -14,7 +14,23 @@ dependencies = [
 llm = [
     "anthropic>=0.40",
 ]
+openai = [
+    "openai>=1.0",
+]
+langchain = [
+    "langchain-core>=0.3",
+    "langchain-anthropic>=0.3",
+    "langchain-openai>=0.3",
+]
 serve = [
+    "aiohttp>=3.9",
+]
+all = [
+    "anthropic>=0.40",
+    "openai>=1.0",
+    "langchain-core>=0.3",
+    "langchain-anthropic>=0.3",
+    "langchain-openai>=0.3",
     "aiohttp>=3.9",
 ]
 dev = [

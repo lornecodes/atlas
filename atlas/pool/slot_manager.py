@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import time
 from dataclasses import dataclass, field
 
@@ -14,6 +15,15 @@ from atlas.runtime.context import AgentContext
 logger = get_logger(__name__)
 
 
+class SlotState(enum.Enum):
+    """Valid states for an agent slot."""
+
+    WARMING = "warming"
+    IDLE = "idle"
+    BUSY = "busy"
+    DRAINING = "draining"
+
+
 @dataclass
 class AgentSlot:
     """A warm agent instance ready to accept work."""
@@ -23,7 +33,7 @@ class AgentSlot:
     created_at: float = field(default_factory=time.monotonic)
     last_used: float = field(default_factory=time.monotonic)
     jobs_completed: int = 0
-    state: str = "idle"  # warming | idle | busy | draining
+    state: SlotState = SlotState.IDLE
 
 
 class SlotManager:
@@ -51,7 +61,7 @@ class SlotManager:
         async with self._lock:
             slots = self._warm_slots.get(agent_name, [])
             for slot in slots:
-                if slot.state == "idle":
+                if slot.state == SlotState.IDLE:
                     slot.state = "busy"
                     slot.last_used = time.monotonic()
                     logger.debug("Reusing warm slot for %s", agent_name)
@@ -77,17 +87,17 @@ class SlotManager:
         warmup_ms = (time.monotonic() - start) * 1000
         logger.debug("Cold start for %s took %.1fms", agent_name, warmup_ms)
 
-        slot = AgentSlot(agent_name=agent_name, instance=instance, state="busy")
+        slot = AgentSlot(agent_name=agent_name, instance=instance, state=SlotState.BUSY)
         return slot, warmup_ms
 
     async def release(self, slot: AgentSlot) -> None:
         """Return a slot to the warm pool or destroy it."""
         async with self._lock:
             slots = self._warm_slots.setdefault(slot.agent_name, [])
-            idle_count = sum(1 for s in slots if s.state == "idle")
+            idle_count = sum(1 for s in slots if s.state == SlotState.IDLE)
 
             if idle_count < self._warm_pool_size:
-                slot.state = "idle"
+                slot.state = SlotState.IDLE
                 slot.last_used = time.monotonic()
                 if slot not in slots:
                     slots.append(slot)
@@ -110,7 +120,7 @@ class SlotManager:
         async with self._lock:
             for agent_name, slots in list(self._warm_slots.items()):
                 for slot in list(slots):
-                    if slot.state == "idle" and (now - slot.last_used) > idle_timeout:
+                    if slot.state == SlotState.IDLE and (now - slot.last_used) > idle_timeout:
                         slots.remove(slot)
                         expired.append(slot)
         # Shutdown outside the lock so on_shutdown() doesn't block acquire/release
@@ -131,8 +141,10 @@ class SlotManager:
 
     async def _shutdown_slot(self, slot: AgentSlot) -> None:
         """Call on_shutdown for an agent slot."""
-        slot.state = "draining"
+        slot.state = SlotState.DRAINING
         try:
             await asyncio.wait_for(slot.instance.on_shutdown(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        except asyncio.TimeoutError:
+            logger.warning("Slot shutdown timed out for %s", slot.agent_name)
+        except Exception as e:
+            logger.warning("Slot shutdown error for %s: %s", slot.agent_name, e)

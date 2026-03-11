@@ -35,8 +35,17 @@ class LLMAgent(AgentBase):
         self._provider: LLMProvider | None = None
 
     async def on_startup(self) -> None:
-        """Create the LLM provider. Override _create_provider to customize."""
-        self._provider = self._create_provider()
+        """Create the LLM provider.
+
+        If ``context.providers["llm_provider"]`` is set, uses that
+        (dependency injection for testing / composition). Otherwise
+        falls back to ``_create_provider()``.
+        """
+        injected = self.context.providers.get("llm_provider")
+        if injected is not None:
+            self._provider = injected
+        else:
+            self._provider = self._create_provider()
 
     def _create_provider(self) -> LLMProvider:
         """Create an LLM provider instance.

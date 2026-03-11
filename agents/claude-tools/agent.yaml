@@ -1,0 +1,41 @@
+agent:
+  name: "claude-tools"
+  version: "1.0.0"
+  description: "Research agent using Claude with tool use (direct Anthropic SDK)"
+
+  input:
+    schema:
+      type: object
+      properties:
+        question:
+          type: string
+          description: "The question to research"
+      required: [question]
+
+  output:
+    schema:
+      type: object
+      properties:
+        answer:
+          type: string
+        tools_used:
+          type: array
+          items:
+            type: string
+        steps:
+          type: integer
+        model:
+          type: string
+      required: [answer, tools_used, steps, model]
+
+  capabilities:
+    - research
+    - reasoning
+    - tool-use
+    - llm
+
+  model:
+    preference: "fast"
+    override_allowed: true
+
+  execution_timeout: 120.0

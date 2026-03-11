@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,7 +23,9 @@ class AgentMetrics:
         "pending": 0, "running": 0, "completed": 0, "failed": 0, "cancelled": 0,
     })
     latencies: list[float] = field(default_factory=list)
-    _completed_timestamps: list[float] = field(default_factory=list)
+    _completed_timestamps: deque[float] = field(
+        default_factory=lambda: deque(maxlen=_THROUGHPUT_WINDOW * 10)
+    )
     warm_hits: int = 0
     total_retries: int = 0
 
@@ -35,15 +38,12 @@ class AgentMetrics:
 
     def record_completion(self, job: JobData) -> None:
         """Record latency, warm hits, and retries for a terminal job."""
-        now = time.time()
-        self._completed_timestamps.append(now)
-        # Trim timestamps older than throughput window
-        cutoff = now - _THROUGHPUT_WINDOW
-        self._completed_timestamps = [t for t in self._completed_timestamps if t > cutoff]
+        self._completed_timestamps.append(time.time())
 
         if job.execution_ms > 0:
             bisect.insort(self.latencies, job.execution_ms)
             if len(self.latencies) > _LATENCY_WINDOW:
+                # Keep only the most recent window (already sorted)
                 self.latencies = self.latencies[-_LATENCY_WINDOW:]
 
         if job.warmup_ms == 0:

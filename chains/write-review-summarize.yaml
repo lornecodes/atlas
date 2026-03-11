@@ -1,0 +1,21 @@
+chain:
+  name: "write-review-summarize"
+  description: "Three-vendor chain: Claude writes (Anthropic SDK), GPT reviews (OpenAI SDK), LangChain summarizes (LCEL)"
+
+  steps:
+    - agent: "claude-writer"
+      name: "write"
+      input_map:
+        topic: "$.trigger.topic"
+        style: "$.trigger.style"
+
+    - agent: "openai-reviewer"
+      name: "review"
+      input_map:
+        content: "$.steps.write.output.content"
+        criteria: "$.trigger.criteria"
+
+    - agent: "langchain-summarizer"
+      name: "summarize"
+      input_map:
+        text: "$.steps.review.output.review"

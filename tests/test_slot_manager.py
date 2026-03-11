@@ -7,7 +7,7 @@ import time
 import pytest
 
 from atlas.contract.registry import AgentRegistry
-from atlas.pool.slot_manager import SlotManager, AgentSlot
+from atlas.pool.slot_manager import SlotManager, AgentSlot, SlotState
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ class TestSlotManager:
     async def test_acquire_cold_start(self, slot_mgr: SlotManager):
         slot, warmup_ms = await slot_mgr.acquire("echo")
         assert slot.agent_name == "echo"
-        assert slot.state == "busy"
+        assert slot.state == SlotState.BUSY
         assert warmup_ms >= 0
 
     async def test_acquire_warm_reuse(self, slot_mgr: SlotManager):
@@ -33,7 +33,7 @@ class TestSlotManager:
     async def test_release_to_warm_pool(self, slot_mgr: SlotManager):
         slot, _ = await slot_mgr.acquire("echo")
         await slot_mgr.release(slot)
-        assert slot.state == "idle"
+        assert slot.state == SlotState.IDLE
 
     async def test_release_destroys_when_full(self, registry: AgentRegistry):
         mgr = SlotManager(registry, warm_pool_size=1)
@@ -41,13 +41,13 @@ class TestSlotManager:
         s2, _ = await mgr.acquire("echo")
         await mgr.release(s1)  # Goes to pool (size=1)
         await mgr.release(s2)  # Pool full, destroyed
-        assert s1.state == "idle"
-        assert s2.state == "draining"
+        assert s1.state == SlotState.IDLE
+        assert s2.state == SlotState.DRAINING
 
     async def test_destroy_calls_shutdown(self, slot_mgr: SlotManager):
         slot, _ = await slot_mgr.acquire("echo")
         await slot_mgr.destroy(slot)
-        assert slot.state == "draining"
+        assert slot.state == SlotState.DRAINING
 
     async def test_reap_idle_removes_expired(self, slot_mgr: SlotManager):
         slot, _ = await slot_mgr.acquire("echo")

@@ -1,0 +1,41 @@
+agent:
+  name: "openai-reviewer"
+  version: "1.0.0"
+  description: "Content reviewer powered by OpenAI GPT"
+
+  input:
+    schema:
+      type: object
+      properties:
+        content:
+          type: string
+          description: "The content to review"
+        criteria:
+          type: string
+          description: "Review criteria (e.g. clarity, accuracy, depth)"
+      required: [content]
+
+  output:
+    schema:
+      type: object
+      properties:
+        review:
+          type: string
+        rating:
+          type: integer
+        suggestions:
+          type: array
+          items:
+            type: string
+        model:
+          type: string
+      required: [review, rating, suggestions, model]
+
+  capabilities:
+    - review
+    - analysis
+    - llm
+
+  model:
+    preference: "fast"
+    override_allowed: true

@@ -1,0 +1,16 @@
+chain:
+  name: "write-then-review"
+  description: "Claude writes content, GPT reviews it — cross-framework chain"
+
+  steps:
+    - agent: "claude-writer"
+      name: "write"
+      input_map:
+        topic: "$.trigger.topic"
+        style: "$.trigger.style"
+
+    - agent: "openai-reviewer"
+      name: "review"
+      input_map:
+        content: "$.steps.write.output.content"
+        criteria: "$.trigger.criteria"

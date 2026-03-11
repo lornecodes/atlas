@@ -1,0 +1,40 @@
+agent:
+  name: "langchain-summarizer"
+  version: "1.0.0"
+  description: "Summarizer using LangChain LCEL (LangChain Expression Language)"
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+          description: "The text to summarize"
+        max_points:
+          type: integer
+          description: "Maximum number of key points to extract"
+      required: [text]
+
+  output:
+    schema:
+      type: object
+      properties:
+        summary:
+          type: string
+        key_points:
+          type: array
+          items:
+            type: string
+        model:
+          type: string
+      required: [summary, key_points, model]
+
+  capabilities:
+    - summarization
+    - text-processing
+    - langchain
+    - llm
+
+  model:
+    preference: "fast"
+    override_allowed: true

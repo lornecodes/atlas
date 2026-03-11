@@ -1,0 +1,37 @@
+agent:
+  name: "claude-writer"
+  version: "1.0.0"
+  description: "Creative writing agent powered by Claude (Anthropic SDK)"
+
+  input:
+    schema:
+      type: object
+      properties:
+        topic:
+          type: string
+          description: "The topic to write about"
+        style:
+          type: string
+          description: "Writing style (e.g. concise, detailed, poetic)"
+      required: [topic]
+
+  output:
+    schema:
+      type: object
+      properties:
+        content:
+          type: string
+        word_count:
+          type: integer
+        model:
+          type: string
+      required: [content, word_count, model]
+
+  capabilities:
+    - writing
+    - content-generation
+    - llm
+
+  model:
+    preference: "fast"
+    override_allowed: true

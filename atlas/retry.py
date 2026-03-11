@@ -62,9 +62,10 @@ class RetrySubscriber:
             delay,
         )
 
-        asyncio.get_event_loop().call_later(
+        loop = asyncio.get_running_loop()
+        loop.call_later(
             delay,
-            lambda: asyncio.ensure_future(
+            lambda: asyncio.create_task(
                 self._submit_retry(job, retry_count, original_id)
             ),
         )
