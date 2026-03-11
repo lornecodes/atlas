@@ -1,0 +1,458 @@
+<p align="center">
+  <h1 align="center">Atlas</h1>
+  <p align="center">
+    <strong>The universal runtime for AI agents.</strong>
+  </p>
+  <p align="center">
+    <a href="#the-idea">The Idea</a> ·
+    <a href="#what-atlas-does-today">What It Does Today</a> ·
+    <a href="#where-its-going">Where It's Going</a> ·
+    <a href="#quick-start">Quick Start</a> ·
+    <a href="#roadmap">Roadmap</a>
+  </p>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/tests-582_passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/async-first-purple" alt="Async">
+</p>
+
+---
+
+## The Idea
+
+There's no standard way to package, run, and compose AI agents.
+
+You build a LangChain agent. Someone else builds a CrewAI agent. A third team writes raw Python. None of these agents can discover each other, run in the same pool, or chain together without custom glue for every pair. Each one lives inside the application that built it — tightly coupled to its framework, its dependencies, its infrastructure.
+
+Atlas introduces one abstraction that changes this: **the contract**.
+
+A contract is a YAML file that declares what an agent takes in and what it puts out. Typed. Versioned. Framework-agnostic. What's behind the contract — an LLM, a database query, an entire CrewAI crew, a third-party API — doesn't matter. To Atlas, every agent is just a typed function with a name.
+
+```mermaid
+flowchart TB
+    subgraph Before["Without a standard runtime"]
+        A1[LangChain Agent] -.-x A2[CrewAI Agent]
+        A2 -.-x A3[Custom Agent]
+        A3 -.-x A4[Vendor API]
+    end
+
+    subgraph After["With Atlas"]
+        B1[LangChain Agent] --> C1[Contract]
+        B2[CrewAI Agent] --> C2[Contract]
+        B3[Custom Agent] --> C3[Contract]
+        B4[Vendor API] --> C4[Contract]
+        C1 & C2 & C3 & C4 --> Pool[Atlas Runtime<br/><i>one pool, one registry, one set of metrics</i>]
+    end
+
+    style Before fill:#fff3f3
+    style After fill:#f0fff4
+```
+
+This is the same idea that made Docker work for applications, npm for packages, and REST for services — a standard interface that decouples the what from the how.
+
+---
+
+## What Atlas Does Today
+
+Atlas is in active development. Here's what's shipped and working (582 tests).
+
+### Typed Agent Contracts
+
+Every agent declares a YAML contract with JSON Schema inputs and outputs. The runtime validates data at the boundary — invalid inputs are rejected before execution starts, malformed outputs are caught before reaching consumers.
+
+```yaml
+agent:
+  name: classifier
+  version: "1.2.0"
+  capabilities: [classification, nlp]
+  input:
+    schema:
+      type: object
+      properties:
+        text: { type: string }
+        categories: { type: array, items: { type: string } }
+      required: [text, categories]
+  output:
+    schema:
+      type: object
+      properties:
+        category: { type: string }
+        confidence: { type: number }
+      required: [category, confidence]
+```
+
+### Agent Registry with Semver
+
+Discover agents from directories. Resolve by name and semver range. Search by capability.
+
+```python
+registry = AgentRegistry(search_paths=["./agents", "./vendor-agents"])
+registry.discover()
+
+agent = registry.get("classifier", "^1.0.0")       # latest 1.x.x
+agents = registry.search("classification")          # all with this capability
+```
+
+### Managed Execution Pool
+
+Bounded concurrency via semaphore. Priority-ordered scheduling — highest priority dequeued first. Warm slot reuse — agents call `on_startup()` once, then handle many jobs without reinitializing. Queue backpressure raises `QueueFullError` at capacity. Graceful shutdown waits for running jobs to complete.
+
+```python
+pool = ExecutionPool(
+    registry, queue,
+    max_concurrent=8,      # max parallel executions
+    warm_pool_size=4,      # slots kept alive between jobs
+    idle_timeout=300.0,    # evict idle slots after 5 min
+)
+```
+
+### Chain Composition with Auto-Mediation
+
+Define multi-step agent pipelines in YAML. Atlas mediates data between steps through a strategy cascade — trying the simplest approach first:
+
+1. **Direct** — output matches input schema, pass through
+2. **Mapped** — apply `input_map` field mappings from chain definition
+3. **Coerce** — automatic type conversion (string ↔ number, scalar wrapping)
+4. **LLM Bridge** — semantic transform via LLM when schemas are structurally incompatible
+
+```yaml
+chain:
+  name: analyze-and-format
+  steps:
+    - agent: classifier
+    - agent: formatter
+      input_map:
+        content: category
+        style: uppercase
+```
+
+```python
+from atlas.mediation.analyzer import analyze_compatibility
+
+# Pre-check whether two agents can chain
+compat = analyze_compatibility(agent_a.output_schema, agent_b.input_schema)
+print(compat.strategy)   # "direct", "mapped", "coerce", or "llm_bridge"
+```
+
+### Pluggable Orchestrators with Hot-Swap
+
+Routing interceptors that decide what happens to each job — allow, reject (with reason), redirect to a different agent, or override priority. Swap the orchestrator at runtime without restarting.
+
+```python
+from atlas.orchestrator.protocol import Orchestrator, RoutingDecision
+
+class TierRouter(Orchestrator):
+    async def route(self, job, registry):
+        if job.metadata.get("tier") == "premium":
+            return RoutingDecision(action="redirect", agent_name="summarizer-gpt4")
+        return RoutingDecision(action="redirect", agent_name="summarizer-fast")
+
+    async def on_job_complete(self, job): ...
+    async def on_job_failed(self, job): ...
+
+pool.set_orchestrator(TierRouter())  # takes effect on next job
+```
+
+### Decoupled Observability
+
+Metrics, traces, eval hooks, retry, and persistence all subscribe to the same EventBus. Add or remove any of them without touching agent code. A failing subscriber doesn't affect execution or other subscribers.
+
+```python
+from atlas.metrics import MetricsCollector
+from atlas.trace import TraceCollector
+
+MetricsCollector(bus)    # per-agent: latency percentiles, warm hit rate, throughput
+TraceCollector(bus)      # per-job: execution time, token counts, cost estimates
+```
+
+```python
+# Per-job trace
+trace = tc.get(job.id)
+trace.execution_ms          # wall-clock time
+trace.input_tokens           # LLM tokens consumed
+trace.estimated_cost_usd    # cost estimate
+
+# Per-agent metrics
+m = mc.get_agent_metrics("classifier")
+m["latency_p50_ms"]         # 230.5
+m["warm_hit_rate"]           # 0.87
+m["jobs_by_status"]          # {"completed": 1500, "failed": 12}
+```
+
+### Agent Spawning
+
+Agents can spawn child agents during execution — tracked as child jobs with parent references and depth limits.
+
+```python
+class DecomposerAgent(AgentBase):
+    async def execute(self, input_data: dict) -> dict:
+        child = await self.context.spawn("sub-agent", {"chunk": input_data["text"][:1000]})
+        return {"result": child.output}
+```
+
+### Eval Hooks
+
+Colocate `eval.yaml` with agents. Checks run automatically on every execution and attach results to traces.
+
+```yaml
+eval:
+  checks:
+    - name: confidence_reasonable
+      type: range
+      field: confidence
+      min_val: 0.0
+      max_val: 1.0
+    - name: category_not_empty
+      type: contains
+      field: category
+```
+
+### Retry, Persistence, and Recovery
+
+Failed jobs auto-retry with configurable backoff. Jobs persist to SQLite and survive crashes — pending jobs reload on restart.
+
+```python
+recovered = await queue.load_pending()  # picks up where it left off
+```
+
+### HTTP API, WebSocket, and CLI
+
+```bash
+atlas discover ./agents                     # scan and list contracts
+atlas run classifier '{"text": "...", "categories": ["a","b"]}'
+atlas serve --agents ./agents --db atlas.db  # start HTTP + WS server
+atlas orchestrator set cost-router           # swap routing at runtime
+```
+
+| Endpoint | Description |
+|---|---|
+| `POST /api/jobs` | Submit a job |
+| `GET /api/jobs/{id}` | Job status and result |
+| `GET /api/agents` | Discovered agents |
+| `GET /api/metrics` | Pool and per-agent metrics |
+| `GET /api/traces` | Execution traces |
+| `POST /api/orchestrator` | Swap routing policy |
+| `WS /ws` | Live job status stream |
+
+For the full technical deep-dive — internal diagrams, module map, ordering guarantees, warm slot lifecycle — see **[Architecture](docs/ARCHITECTURE.md)**.
+
+---
+
+## Where It's Going
+
+The contract abstraction is the foundation. Here's what it unlocks as Atlas matures.
+
+### Contain agents from any framework
+
+Wrap agents built with LangChain, CrewAI, OpenClaw, or anything else in Atlas contracts. They run in the same pool, compose in the same chains, and appear in the same registry — regardless of what's inside.
+
+```python
+# A CrewAI crew behind an Atlas contract
+class Agent(AgentBase):
+    async def on_startup(self):
+        self.crew = build_my_crewai_crew()
+
+    async def execute(self, input_data: dict) -> dict:
+        result = await self.crew.kickoff(input_data)
+        return {"analysis": result.output}
+```
+
+The consumer doesn't know or care what's underneath. They see a contract. They submit a job. They get a typed result.
+
+### Shared agent pool across a company
+
+Every team builds agents for their domain. All of them publish contracts to a shared registry. Every product discovers and uses any agent without importing code, managing dependencies, or standing up separate infrastructure.
+
+```mermaid
+flowchart TB
+    subgraph Teams["Teams build agents"]
+        T1[Payments Team] -->|publish| A1[fraud-detector<br/><i>v2.1.0</i>]
+        T2[Content Team] -->|publish| A2[moderator<br/><i>v1.4.0</i>]
+        T3[Data Team] -->|publish| A3[classifier<br/><i>v3.0.0</i>]
+        T4[ML Team] -->|publish| A4[summarizer<br/><i>v1.0.0</i>]
+    end
+
+    subgraph Registry["Shared Registry"]
+        A1 & A2 & A3 & A4 --> Reg[Agent Registry]
+    end
+
+    subgraph Products["Products consume agents"]
+        Reg --> P1[Checkout App]
+        Reg --> P2[CMS Dashboard]
+        Reg --> P3[Analytics Pipeline]
+        Reg --> P4[Customer Support Bot]
+    end
+
+    style Teams fill:#f0f4ff
+    style Registry fill:#fffff0
+    style Products fill:#f0fff4
+```
+
+Teams own their agents. Products compose them freely. One pool handles concurrency, priority, cost tracking, and routing.
+
+### Ship agents like APIs
+
+Domain experts publish agents the same way they'd ship an API — the contract is the interface, the implementation stays private. Versioned with semver. Pin consumers to ranges. Ship updates without breaking anyone.
+
+```yaml
+# What you publish — the contract
+agent:
+  name: legal-doc-analyzer
+  version: "2.1.0"
+  capabilities: [legal-analysis, risk-assessment, compliance]
+  input:
+    schema: { ... }
+  output:
+    schema: { ... }
+
+# What stays private: the implementation, model weights, prompts, training data
+```
+
+### Chain agents across infrastructure
+
+An on-prem extraction agent feeds a cloud LLM agent feeds an internal formatter. They don't share code, dependencies, or infrastructure. They share contracts — Atlas mediates the data between them.
+
+```yaml
+chain:
+  name: cross-infra-pipeline
+  steps:
+    - agent: on-prem/extractor
+    - agent: cloud/summarizer
+      input_map: { text: extracted_data }
+    - agent: internal/formatter
+      input_map: { content: summary, style: markdown }
+```
+
+### Schedule anything
+
+Submit work to the pool and let it run — classification sweeps, nightly cleanups, research tasks, batch processing, periodic audits. Jobs are persistent, priority-ordered, and recoverable after crashes.
+
+```python
+# Background cleanup — low priority
+for table in stale_tables:
+    await pool.submit(JobData(
+        agent_name="data-cleaner",
+        input_data={"table": table, "older_than_days": 90},
+        priority=0,
+    ))
+
+# Urgent fraud check — jumps the queue
+await pool.submit(JobData(
+    agent_name="fraud-detector",
+    input_data={"transaction_id": txn.id},
+    priority=10,
+))
+```
+
+---
+
+## Quick Start
+
+```bash
+pip install atlas
+```
+
+### Define and run an agent
+
+```yaml
+# agents/echo/agent.yaml
+agent:
+  name: echo
+  version: "1.0.0"
+  input:
+    schema:
+      type: object
+      properties:
+        message: { type: string }
+      required: [message]
+  output:
+    schema:
+      type: object
+      properties:
+        message: { type: string }
+      required: [message]
+```
+
+```python
+# agents/echo/agent.py
+from atlas.runtime.base import AgentBase
+
+class Agent(AgentBase):
+    async def execute(self, input_data: dict) -> dict:
+        return {"message": input_data["message"]}
+```
+
+```bash
+atlas discover ./agents
+atlas run echo '{"message": "hello"}'
+```
+
+### Submit to a pool
+
+```python
+from atlas.contract.registry import AgentRegistry
+from atlas.events import EventBus
+from atlas.pool.executor import ExecutionPool
+from atlas.pool.job import JobData
+from atlas.pool.queue import JobQueue
+
+registry = AgentRegistry(search_paths=["./agents"])
+registry.discover()
+
+bus = EventBus()
+queue = JobQueue(max_size=100, event_bus=bus)
+pool = ExecutionPool(registry, queue, max_concurrent=8, warm_pool_size=4)
+await pool.start()
+
+job = JobData(agent_name="echo", input_data={"message": "hello"})
+await pool.submit(job)
+result = await queue.wait_for_terminal(job.id, timeout=10.0)
+# result.output_data == {"message": "hello"}
+```
+
+---
+
+## Roadmap
+
+### Shipped
+
+| Phase | What |
+|---|---|
+| 1 | **Contracts & Registry** — YAML contracts, schema validation, semver, capability search |
+| 2 | **Execution Pool** — priority queue, warm slots, concurrency, graceful shutdown |
+| 3 | **Chain Composition** — multi-step chains, mediation engine, async executor |
+| 4 | **Mediation Engine** — direct / mapped / coerce / LLM bridge strategies |
+| 5 | **Monitoring** — traces, token tracking, cost estimation, eval hooks |
+| 6 | **Orchestrator Override** — pluggable routing, hot-swap, reject/redirect |
+
+### Next
+
+| Phase | What |
+|---|---|
+| 7 | **Triggers & Scheduling** — cron, webhooks, file-watch, scheduled chains |
+| 8 | **Security & Sandboxing** — permission scopes, resource limits, network policies, secret injection |
+| 9 | **Skills & Tool Use** — tool declarations in contracts, MCP bridging, agent-to-agent tools |
+| 10 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
+| 11 | **Registry Federation** — remote registries, agent publishing, cross-registry dependency resolution |
+
+---
+
+## Learn More
+
+- **[Architecture](docs/ARCHITECTURE.md)** — technical deep-dive, diagrams, module map
+- **[Contributing](CONTRIBUTING.md)** — development setup, testing, how to add agents
+- **[Example agents](agents/)** — 17 reference implementations
+- **[Example chains](chains/)** — multi-step pipeline definitions
+
+## Requirements
+
+- Python 3.11+
+- No external services — runs with Python agents and SQLite
+- Optional: `anthropic`, `openai`, or `langchain` for LLM-powered agents
+
+## License
+
+[MIT](LICENSE)

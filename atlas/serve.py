@@ -88,7 +88,7 @@ async def _handle_list_jobs(request: web.Request) -> web.Response:
         )
     else:
         # In-memory only — list from queue
-        all_jobs = list(queue._jobs.values())
+        all_jobs = queue.list_all()
         if status_filter:
             all_jobs = [j for j in all_jobs if j.status == status_filter]
         if agent_filter:

@@ -90,13 +90,16 @@ class ExecutionPool:
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
 
-            # Wait for running tasks
+            # Wait for running tasks, then cancel stragglers
             if self._running_tasks:
                 done, pending = await asyncio.wait(
                     self._running_tasks, timeout=timeout
                 )
                 for task in pending:
                     task.cancel()
+                # Give cancelled tasks a chance to handle CancelledError
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
             # Shutdown all warm agents
             await self._slots.shutdown_all()
@@ -124,6 +127,14 @@ class ExecutionPool:
     def _on_task_done(self, task: asyncio.Task) -> None:
         """Clean up when a job task completes."""
         self._running_tasks.discard(task)
+        # Drain exception to avoid 'exception was never retrieved' warnings.
+        # CancelledError during shutdown is expected; real errors are already
+        # logged inside _run_job.
+        if not task.cancelled():
+            try:
+                task.result()
+            except Exception:
+                pass
         if self._semaphore:
             self._semaphore.release()
 

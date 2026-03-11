@@ -48,14 +48,14 @@ class EventBus:
         for callback in list(self._subscribers):  # Copy to allow unsub during emit
             try:
                 await callback(job, old_status, new_status)
-            except Exception as e:
+            except Exception:
                 logger.error(
-                    "Event subscriber %s failed for job %s (%s→%s): %s",
+                    "Event subscriber %s failed for job %s (%s→%s)",
                     getattr(callback, "__name__", callback),
                     job.id,
                     old_status,
                     new_status,
-                    e,
+                    exc_info=True,
                 )
 
     @property

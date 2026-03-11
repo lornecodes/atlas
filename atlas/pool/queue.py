@@ -51,6 +51,8 @@ class JobQueue:
                 f"Queue is full ({self._max_size} jobs). "
                 "Wait for jobs to complete or increase max_size."
             )
+        if job.id in self._jobs:
+            raise ValueError(f"Duplicate job ID: {job.id}")
         self._jobs[job.id] = job
         self._waiters[job.id] = asyncio.Event()
         self._active_count += 1
@@ -120,28 +122,40 @@ class JobQueue:
         if not was_terminal and job.is_terminal:
             self._active_count = max(0, self._active_count - 1)
 
-        # Signal waiters on terminal state and clean up to prevent unbounded growth
+        # Persist updated state to store
+        if self._store and old_status != new_status:
+            await self._store.save(job)
+
+        # Emit event on status change — subscribers process before waiters wake
+        if old_status != new_status and self._event_bus:
+            await self._event_bus.emit(job, old_status, new_status)
+
+        # Signal waiters LAST so all subscribers have processed the event
         if job.is_terminal and job_id in self._waiters:
             self._waiters[job_id].set()
             del self._waiters[job_id]
 
-        # Emit event on status change
-        if old_status != new_status and self._event_bus:
-            await self._event_bus.emit(job, old_status, new_status)
-
     async def wait_for_terminal(self, job_id: str, timeout: float | None = None) -> JobData | None:
-        """Block until a job reaches terminal state."""
-        job = self._jobs.get(job_id)
-        if job and job.is_terminal:
-            return job
+        """Block until a job reaches terminal state.
+
+        Waits for the waiter event to fire, which guarantees that all
+        side effects (store persistence, EventBus emission) have completed
+        before returning.
+        """
         event = self._waiters.get(job_id)
-        if not event:
-            return job
-        try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
+        if event:
+            # Always wait on the event — it fires AFTER store save + bus emit
+            try:
+                await asyncio.wait_for(event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+            return self._jobs.get(job_id)
+        # No waiter means job already reached terminal (waiter was cleaned up)
         return self._jobs.get(job_id)
+
+    def list_all(self) -> list[JobData]:
+        """List all jobs in the queue."""
+        return list(self._jobs.values())
 
     def list_by_status(self, status: str) -> list[JobData]:
         """List all jobs with a given status."""

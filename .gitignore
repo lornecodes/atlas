@@ -7,7 +7,11 @@ build/
 .pytest_cache/
 .eggs/
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 .DS_Store
 .vscode/
 .idea/
 *.env
+idea.md
