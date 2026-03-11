@@ -194,6 +194,7 @@ class ExecutionPool:
                 )
             except asyncio.TimeoutError:
                 logger.error("Job %s timed out after %.1fs", job.id, exec_timeout)
+                self._capture_trace_metadata(ctx, job)
                 await self._queue.update(
                     job.id,
                     status="failed",
@@ -202,11 +203,12 @@ class ExecutionPool:
                     warmup_ms=warmup_ms,
                     execution_ms=(time.monotonic() - exec_start) * 1000,
                 )
-    
+
                 await self._slots.destroy(slot)
                 return
             except Exception as e:
                 logger.error("Job %s failed: %s", job.id, e)
+                self._capture_trace_metadata(ctx, job)
                 await self._queue.update(
                     job.id,
                     status="failed",
@@ -215,11 +217,14 @@ class ExecutionPool:
                     warmup_ms=warmup_ms,
                     execution_ms=(time.monotonic() - exec_start) * 1000,
                 )
-    
+
                 await self._slots.destroy(slot)
                 return
 
             execution_ms = (time.monotonic() - exec_start) * 1000
+
+            # Capture trace metadata from agent context
+            self._capture_trace_metadata(ctx, job)
 
             # Validate output
             if entry:
@@ -264,6 +269,25 @@ class ExecutionPool:
             await self._orchestrator.on_job_failed(job)
 
 
+    @property
+    def orchestrator(self) -> Orchestrator:
+        """Current orchestrator."""
+        return self._orchestrator
+
+    def set_orchestrator(self, orchestrator: Orchestrator) -> None:
+        """Hot-swap the orchestrator at runtime."""
+        self._orchestrator = orchestrator
+        logger.info("Orchestrator swapped to %s", type(orchestrator).__name__)
+
+    @staticmethod
+    def _capture_trace_metadata(ctx, job: JobData) -> None:
+        """Copy execution_metadata from context into job.metadata for tracing."""
+        exec_meta = ctx.execution_metadata
+        if exec_meta:
+            job.metadata["_trace_input_tokens"] = exec_meta.get("input_tokens", 0)
+            job.metadata["_trace_output_tokens"] = exec_meta.get("output_tokens", 0)
+            job.metadata["_trace_model"] = exec_meta.get("model", "")
+
     def _make_spawn_callback(self):
         """Create a spawn callback bound to this pool."""
         async def _spawn(
@@ -271,8 +295,11 @@ class ExecutionPool:
             input_data: dict,
             priority: int,
             parent_depth: int,
+            parent_job_id: str = "",
         ) -> SpawnResult:
-            return await self._spawn_agent(agent_name, input_data, priority, parent_depth)
+            return await self._spawn_agent(
+                agent_name, input_data, priority, parent_depth, parent_job_id
+            )
         return _spawn
 
     async def _spawn_agent(
@@ -281,13 +308,17 @@ class ExecutionPool:
         input_data: dict,
         priority: int,
         parent_depth: int,
+        parent_job_id: str = "",
     ) -> SpawnResult:
         """Execute a spawned child agent through the full pool lifecycle."""
         child_job = JobData(
             agent_name=agent_name,
             input_data=input_data,
             priority=priority,
-            metadata={"_spawn_depth": parent_depth + 1},
+            metadata={
+                "_spawn_depth": parent_depth + 1,
+                "_parent_trace_id": parent_job_id,
+            },
         )
 
         await self._queue.submit(child_job)

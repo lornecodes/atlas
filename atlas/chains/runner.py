@@ -9,6 +9,8 @@ from atlas.chains.definition import ChainDefinition
 from atlas.contract.registry import AgentRegistry
 from atlas.logging import get_logger
 from atlas.mediation.engine import MediationEngine, MediationResult
+from atlas.orchestrator.protocol import Orchestrator, RoutingDecision
+from atlas.pool.job import JobData
 from atlas.runtime.context import AgentContext
 from atlas.runtime.runner import AgentResult, RunError, run_agent
 
@@ -74,6 +76,7 @@ class ChainRunner:
         trigger_input: dict,
         *,
         providers: dict[str, dict[str, Any]] | None = None,
+        orchestrator: Orchestrator | None = None,
     ) -> ChainResult:
         """Execute a chain, mediating between each step.
 
@@ -84,7 +87,22 @@ class ChainRunner:
             providers: Optional per-agent dependency injection. Maps agent
                 names to provider dicts that get set on ``AgentContext.providers``.
                 Example: ``{"claude-writer": {"llm_provider": my_provider}}``
+            orchestrator: Optional orchestrator for per-step routing decisions.
+                If the chain definition specifies an orchestrator name, it will
+                be resolved from the registry and used instead.
         """
+        # Resolve chain-level orchestrator from definition if specified
+        if not orchestrator and chain.orchestrator:
+            entry = self._registry.get_orchestrator(chain.orchestrator)
+            if entry and entry.agent_class:
+                instance = entry.agent_class()
+                if isinstance(instance, Orchestrator):
+                    orchestrator = instance
+                    logger.info(
+                        "Chain '%s' using orchestrator: %s",
+                        chain.name, chain.orchestrator,
+                    )
+
         # Pre-validate: all agents must exist before we start executing
         missing = [
             s.agent_name for s in chain.steps
@@ -157,8 +175,40 @@ class ChainRunner:
 
                 step_input = mediation_result.data
 
+            # Orchestrator routing (if orchestrator provided)
+            effective_agent = step.agent_name
+            if orchestrator:
+                routing_job = JobData(
+                    agent_name=step.agent_name,
+                    input_data=step_input,
+                    metadata={"_chain_name": chain.name, "_step_index": i},
+                )
+                decision = await orchestrator.route(routing_job, self._registry)
+
+                if decision.action == "reject":
+                    reason = decision.metadata.get("reason", "Rejected by orchestrator")
+                    steps.append(StepResult(
+                        agent_name=step.agent_name,
+                        agent_result=AgentResult(error=reason, agent_name=step.agent_name),
+                        mediation=mediation_result,
+                    ))
+                    return ChainResult(
+                        success=False,
+                        output={"partial_outputs": [s.agent_result.data for s in steps if s.agent_result.success], "failed_step": i},
+                        steps=steps,
+                        failed_at=i,
+                        error=f"Orchestrator rejected step {i} ({step.agent_name}): {reason}",
+                    )
+
+                if decision.action == "redirect" and decision.agent_name:
+                    logger.debug(
+                        "Chain '%s' step %d redirected: %s -> %s",
+                        chain.name, i, step.agent_name, decision.agent_name,
+                    )
+                    effective_agent = decision.agent_name
+
             # Build context with chain info + injected providers
-            agent_providers = (providers or {}).get(step.agent_name, {})
+            agent_providers = (providers or {}).get(effective_agent, {})
             ctx = AgentContext(
                 chain_name=chain.name,
                 step_index=i,
@@ -173,7 +223,7 @@ class ChainRunner:
             try:
                 agent_result = await run_agent(
                     self._registry,
-                    step.agent_name,
+                    effective_agent,
                     step_input,
                     context=ctx,
                 )

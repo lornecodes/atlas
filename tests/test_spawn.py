@@ -54,7 +54,7 @@ class TestSpawnGuards:
             await ctx.spawn("echo", {"message": "hi"})
 
     async def test_spawn_with_callback_succeeds(self):
-        async def fake_spawn(agent_name, input_data, priority, parent_depth):
+        async def fake_spawn(agent_name, input_data, priority, parent_depth, parent_job_id=""):
             return SpawnResult(success=True, data={"echoed": input_data})
 
         ctx = AgentContext(
@@ -68,7 +68,7 @@ class TestSpawnGuards:
     async def test_spawn_increments_depth_in_callback(self):
         received_depth = None
 
-        async def capture_spawn(agent_name, input_data, priority, parent_depth):
+        async def capture_spawn(agent_name, input_data, priority, parent_depth, parent_job_id=""):
             nonlocal received_depth
             received_depth = parent_depth
             return SpawnResult(success=True)
@@ -82,7 +82,7 @@ class TestSpawnGuards:
 
     async def test_spawn_at_boundary_succeeds(self):
         """depth=2, max_depth=3 should succeed (2 < 3)."""
-        async def fake_spawn(agent_name, input_data, priority, parent_depth):
+        async def fake_spawn(agent_name, input_data, priority, parent_depth, parent_job_id=""):
             return SpawnResult(success=True)
 
         ctx = AgentContext(
@@ -95,7 +95,7 @@ class TestSpawnGuards:
     async def test_spawn_passes_priority(self):
         received_priority = None
 
-        async def capture_spawn(agent_name, input_data, priority, parent_depth):
+        async def capture_spawn(agent_name, input_data, priority, parent_depth, parent_job_id=""):
             nonlocal received_priority
             received_priority = priority
             return SpawnResult(success=True)

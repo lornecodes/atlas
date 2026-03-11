@@ -1,0 +1,9 @@
+eval:
+  checks:
+    - name: has_message
+      type: exists
+      field: message
+    - name: message_is_string
+      type: regex
+      field: message
+      pattern: ".+"

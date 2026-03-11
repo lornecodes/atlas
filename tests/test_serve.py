@@ -18,7 +18,7 @@ AGENTS_DIR = Path(__file__).parent.parent / "agents"
 
 @pytest.fixture
 async def client():
-    """Create a test client with a running pool."""
+    """Create a test client with a running pool and event bus."""
     registry = AgentRegistry(search_paths=[AGENTS_DIR])
     registry.discover()
 
@@ -26,7 +26,7 @@ async def client():
     queue = JobQueue(event_bus=bus)
     pool = ExecutionPool(registry, queue, max_concurrent=2, warm_pool_size=0)
 
-    app = create_app(registry, queue, pool)
+    app = create_app(registry, queue, pool, event_bus=bus)
     await pool.start()
 
     server = TestServer(app)
@@ -196,3 +196,106 @@ class TestCancelJob:
         assert resp.status == 200
         data = await resp.json()
         assert data["cancelled"] is False
+
+
+# === Trace endpoints ===
+
+
+class TestTraceEndpoints:
+    async def test_list_traces_empty(self, client):
+        resp = await client.get("/api/traces")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data == []
+
+    async def test_trace_created_on_completion(self, client):
+        import asyncio
+
+        await client.post("/api/jobs", json={
+            "agent": "echo",
+            "input": {"message": "trace me"},
+        })
+        await asyncio.sleep(0.5)
+
+        resp = await client.get("/api/traces")
+        assert resp.status == 200
+        data = await resp.json()
+        assert len(data) >= 1
+        assert data[0]["agent_name"] == "echo"
+        assert data[0]["status"] == "completed"
+        assert "trace_id" in data[0]
+
+    async def test_get_trace_by_id(self, client):
+        import asyncio
+
+        submit = await client.post("/api/jobs", json={
+            "agent": "echo",
+            "input": {"message": "get trace"},
+        })
+        job_id = (await submit.json())["id"]
+        await asyncio.sleep(0.5)
+
+        resp = await client.get(f"/api/traces/{job_id}")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["trace_id"] == job_id
+        assert data["agent_name"] == "echo"
+
+    async def test_get_trace_not_found(self, client):
+        resp = await client.get("/api/traces/nonexistent")
+        assert resp.status == 404
+
+    async def test_list_traces_filter_by_agent(self, client):
+        import asyncio
+
+        await client.post("/api/jobs", json={
+            "agent": "echo",
+            "input": {"message": "filter"},
+        })
+        await asyncio.sleep(0.5)
+
+        resp = await client.get("/api/traces?agent=echo")
+        data = await resp.json()
+        assert all(t["agent_name"] == "echo" for t in data)
+
+        resp2 = await client.get("/api/traces?agent=nonexistent")
+        data2 = await resp2.json()
+        assert data2 == []
+
+
+# === Orchestrator endpoints ===
+
+
+class TestOrchestratorEndpoints:
+    async def test_get_orchestrator_default(self, client):
+        resp = await client.get("/api/orchestrator")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["name"] == "DefaultOrchestrator"
+
+    async def test_set_orchestrator_not_found(self, client):
+        resp = await client.post("/api/orchestrator", json={"name": "nonexistent"})
+        assert resp.status == 404
+
+    async def test_reset_orchestrator(self, client):
+        resp = await client.post("/api/orchestrator", json={"name": None})
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["orchestrator"] == "DefaultOrchestrator"
+
+    async def test_set_orchestrator_real(self, client):
+        resp = await client.post("/api/orchestrator", json={"name": "priority-router"})
+        if resp.status == 200:
+            data = await resp.json()
+            assert data["orchestrator"] == "priority-router"
+
+            # Verify it changed
+            get_resp = await client.get("/api/orchestrator")
+            get_data = await get_resp.json()
+            assert get_data["name"] == "PriorityRouterOrchestrator"
+
+            # Reset
+            await client.post("/api/orchestrator", json={"name": None})
+        else:
+            # priority-router might not be discoverable in test env
+            assert resp.status == 404

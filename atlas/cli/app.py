@@ -21,6 +21,7 @@ from atlas.cli.formatting import (
     format_contract,
     format_result,
 )
+from atlas.cli.orchestrator_commands import orch_app
 from atlas.cli.pool_commands import pool_app
 
 app = typer.Typer(
@@ -29,6 +30,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(pool_app, name="pool")
+app.add_typer(orch_app, name="orchestrator")
 
 
 def _get_registry(agents_path: str):

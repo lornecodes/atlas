@@ -83,4 +83,10 @@ class LLMAgent(AgentBase):
             raise RuntimeError("LLMAgent not started — on_startup() not called")
         prompt = self.build_prompt(input_data)
         response = await self._provider.complete(prompt)
+        # Capture token/model info for tracing
+        self.context.execution_metadata.update({
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "model": response.model,
+        })
         return self.parse_response(response, input_data)

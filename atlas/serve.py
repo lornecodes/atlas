@@ -27,6 +27,7 @@ from atlas.app_keys import (
     QUEUE as _QUEUE_KEY,
     REGISTRY as _REGISTRY_KEY,
     STORE as _STORE_KEY,
+    TRACE_COLLECTOR as _TRACE_KEY,
 )
 
 logger = get_logger(__name__)
@@ -212,6 +213,74 @@ async def _handle_agent_metrics(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+async def _handle_list_traces(request: web.Request) -> web.Response:
+    """GET /api/traces — list execution traces."""
+    collector = request.app.get(_TRACE_KEY)
+    if not collector:
+        return web.json_response({"error": "Traces not available"}, status=503)
+
+    agent_filter = request.query.get("agent")
+    limit = int(request.query.get("limit", 50))
+    traces = collector.list(limit=limit, agent_name=agent_filter)
+    return web.json_response([t.to_dict() for t in traces])
+
+
+async def _handle_get_trace(request: web.Request) -> web.Response:
+    """GET /api/traces/{id} — get a single trace."""
+    collector = request.app.get(_TRACE_KEY)
+    if not collector:
+        return web.json_response({"error": "Traces not available"}, status=503)
+
+    trace_id = request.match_info["id"]
+    trace = collector.get(trace_id)
+    if not trace:
+        return web.json_response({"error": "Trace not found"}, status=404)
+    return web.json_response(trace.to_dict())
+
+
+async def _handle_get_orchestrator(request: web.Request) -> web.Response:
+    """GET /api/orchestrator — current orchestrator info."""
+    pool: ExecutionPool = request.app[_POOL_KEY]
+    orch = pool.orchestrator
+    return web.json_response({
+        "name": type(orch).__name__,
+        "type": getattr(orch, "contract", {}) and "custom" or "default",
+    })
+
+
+async def _handle_set_orchestrator(request: web.Request) -> web.Response:
+    """POST /api/orchestrator — set or reset orchestrator at runtime."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = body.get("name")
+    pool: ExecutionPool = request.app[_POOL_KEY]
+    registry: AgentRegistry = request.app[_REGISTRY_KEY]
+
+    if not name:
+        from atlas.orchestrator.default import DefaultOrchestrator
+        pool.set_orchestrator(DefaultOrchestrator())
+        return web.json_response({"orchestrator": "DefaultOrchestrator"})
+
+    entry = registry.get_orchestrator(name)
+    if not entry or not entry.agent_class:
+        return web.json_response(
+            {"error": f"Orchestrator not found: {name}"}, status=404
+        )
+
+    from atlas.orchestrator.protocol import Orchestrator
+    instance = entry.agent_class()
+    if not isinstance(instance, Orchestrator):
+        return web.json_response(
+            {"error": f"{name} does not implement Orchestrator protocol"}, status=400
+        )
+
+    pool.set_orchestrator(instance)
+    return web.json_response({"orchestrator": name})
+
+
 def create_app(
     registry: AgentRegistry,
     queue: JobQueue,
@@ -229,13 +298,16 @@ def create_app(
     if store:
         app[_STORE_KEY] = store
 
-    # Wire EventBus, WebSocket streaming, and metrics if available
+    # Wire EventBus, WebSocket streaming, metrics, and traces if available
     if event_bus:
         app[_EVENT_BUS_KEY] = event_bus
         app[_JOB_TO_DICT_KEY] = _job_to_dict
 
         from atlas.metrics import MetricsCollector
         app[_METRICS_KEY] = MetricsCollector(event_bus)
+
+        from atlas.trace import TraceCollector
+        app[_TRACE_KEY] = TraceCollector(event_bus)
 
     if chain_executor:
         app[_CHAIN_EXECUTOR_KEY] = chain_executor
@@ -260,5 +332,13 @@ def create_app(
     # Metrics routes
     app.router.add_get("/api/metrics", _handle_metrics)
     app.router.add_get("/api/metrics/{agent}", _handle_agent_metrics)
+
+    # Trace routes
+    app.router.add_get("/api/traces", _handle_list_traces)
+    app.router.add_get("/api/traces/{id}", _handle_get_trace)
+
+    # Orchestrator routes
+    app.router.add_get("/api/orchestrator", _handle_get_orchestrator)
+    app.router.add_post("/api/orchestrator", _handle_set_orchestrator)
 
     return app

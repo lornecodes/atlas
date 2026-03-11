@@ -20,7 +20,8 @@ class SpawnResult:
 
 
 # Type for the spawn callback injected by the pool
-SpawnCallback = Callable[[str, dict[str, Any], int, int], Awaitable[SpawnResult]]
+# Args: agent_name, input_data, priority, parent_depth, parent_job_id
+SpawnCallback = Callable[[str, dict[str, Any], int, int, str], Awaitable[SpawnResult]]
 
 
 @dataclass
@@ -54,6 +55,11 @@ class AgentContext:
     # Dependency injection — agents check here before creating their own
     # Keys are agent-defined (e.g. "llm_provider", "langchain_chain", "anthropic_client")
     providers: dict[str, Any] = field(default_factory=dict)
+
+    # Execution metadata — agents write here during execute().
+    # The pool reads this after execute() to build traces.
+    # Keys: input_tokens, output_tokens, model, etc.
+    execution_metadata: dict[str, Any] = field(default_factory=dict)
 
     # Spawn callback — injected by the pool, not set by agents
     _spawn_callback: SpawnCallback | None = field(default=None, repr=False)
@@ -90,4 +96,6 @@ class AgentContext:
         if self._spawn_callback is None:
             raise SpawnError("No spawn callback configured — agent not running in pool")
 
-        return await self._spawn_callback(agent_name, input_data, priority, self.depth)
+        return await self._spawn_callback(
+            agent_name, input_data, priority, self.depth, self.job_id
+        )

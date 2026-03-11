@@ -33,6 +33,7 @@ class ChainDefinition:
     name: str
     description: str = ""
     steps: list[ChainStep] = field(default_factory=list)
+    orchestrator: str = ""  # Optional orchestrator name for per-chain routing
 
     def step_name(self, index: int) -> str:
         """Get the effective name for a step (explicit or default)."""
@@ -47,6 +48,7 @@ class ChainDefinition:
             name=chain["name"],
             description=chain.get("description", ""),
             steps=[ChainStep.from_dict(s) for s in chain.get("steps", [])],
+            orchestrator=chain.get("orchestrator", ""),
         )
 
     @staticmethod

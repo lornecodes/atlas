@@ -254,3 +254,92 @@ class TestNamedStepChains:
         # Verify the step name is properly assigned
         assert chain.step_name(0) == "greet"
         assert chain.step_name(1) == "step_1"
+
+
+# === Per-chain Orchestrator ===
+
+
+class TestChainOrchestrator:
+    async def test_chain_with_pass_through_orchestrator(self, chain_runner: ChainRunner):
+        """Default orchestrator passes all steps through."""
+        from atlas.orchestrator.default import DefaultOrchestrator
+
+        chain = ChainDefinition(
+            name="orch-chain",
+            steps=[ChainStep(agent_name="echo")],
+        )
+        result = await chain_runner.execute(
+            chain, {"message": "hi"}, orchestrator=DefaultOrchestrator()
+        )
+        assert result.success
+        assert result.output["message"] == "hi"
+
+    async def test_chain_orchestrator_rejects_step(self, chain_runner: ChainRunner):
+        """Orchestrator can reject a step, failing the chain."""
+        from atlas.orchestrator.protocol import RoutingDecision
+
+        class RejectAll:
+            async def route(self, job, registry):
+                return RoutingDecision(action="reject", metadata={"reason": "nope"})
+            async def on_job_complete(self, job):
+                pass
+            async def on_job_failed(self, job):
+                pass
+
+        chain = ChainDefinition(
+            name="reject-chain",
+            steps=[ChainStep(agent_name="echo")],
+        )
+        result = await chain_runner.execute(
+            chain, {"message": "hi"}, orchestrator=RejectAll()
+        )
+        assert not result.success
+        assert "nope" in result.error
+
+    async def test_chain_orchestrator_redirects_step(self, chain_runner: ChainRunner):
+        """Orchestrator can redirect a step to a different agent."""
+        from atlas.orchestrator.protocol import RoutingDecision
+
+        class RedirectToEcho:
+            async def route(self, job, registry):
+                # Redirect any agent to echo
+                if job.agent_name != "echo":
+                    return RoutingDecision(action="redirect", agent_name="echo")
+                return RoutingDecision(action="execute")
+            async def on_job_complete(self, job):
+                pass
+            async def on_job_failed(self, job):
+                pass
+
+        chain = ChainDefinition(
+            name="redirect-chain",
+            steps=[ChainStep(agent_name="formatter")],  # Would normally format
+        )
+        # Provide input compatible with echo (message field)
+        result = await chain_runner.execute(
+            chain, {"message": "redirected"}, orchestrator=RedirectToEcho()
+        )
+        assert result.success
+        # Output should come from echo, not formatter
+        assert result.output.get("message") == "redirected"
+
+    def test_chain_definition_orchestrator_field(self):
+        """Chain YAML can specify an orchestrator."""
+        chain = ChainDefinition.from_dict({
+            "chain": {
+                "name": "orch-test",
+                "orchestrator": "priority-router",
+                "steps": [{"agent": "echo"}],
+            }
+        })
+        assert chain.orchestrator == "priority-router"
+
+    def test_chain_definition_no_orchestrator(self):
+        """Orchestrator field defaults to empty."""
+        chain = ChainDefinition.from_dict({
+            "chain": {
+                "name": "no-orch",
+                "steps": [{"agent": "echo"}],
+            }
+        })
+        assert chain.orchestrator == ""
