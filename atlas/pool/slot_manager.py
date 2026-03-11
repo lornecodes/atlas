@@ -62,7 +62,7 @@ class SlotManager:
             slots = self._warm_slots.get(agent_name, [])
             for slot in slots:
                 if slot.state == SlotState.IDLE:
-                    slot.state = "busy"
+                    slot.state = SlotState.BUSY
                     slot.last_used = time.monotonic()
                     logger.debug("Reusing warm slot for %s", agent_name)
                     return slot, 0.0
