@@ -13,6 +13,7 @@ from atlas.orchestrator.protocol import Orchestrator, RoutingDecision
 from atlas.pool.job import JobData
 from atlas.runtime.context import AgentContext
 from atlas.runtime.runner import AgentResult, RunError, run_agent
+from atlas.skills.resolver import SkillResolver
 
 logger = get_logger(__name__)
 
@@ -66,9 +67,12 @@ class ChainRunner:
         self,
         registry: AgentRegistry,
         mediation: MediationEngine,
+        *,
+        skill_resolver: SkillResolver | None = None,
     ) -> None:
         self._registry = registry
         self._mediation = mediation
+        self._skill_resolver = skill_resolver
 
     async def execute(
         self,
@@ -218,6 +222,27 @@ class ChainRunner:
                 },
                 providers=agent_providers,
             )
+
+            # Resolve and inject skills if resolver is configured
+            entry = self._registry.get(effective_agent)
+            if self._skill_resolver and entry:
+                if entry.contract.requires.skills:
+                    try:
+                        resolved = await self._skill_resolver.resolve(
+                            entry.contract.requires.skills
+                        )
+                        ctx._skills.update(resolved)
+                    except Exception as e:
+                        logger.warning(
+                            "Skill resolution failed for step %d (%s): %s",
+                            i, effective_agent, e,
+                        )
+                if entry.contract.requires.platform_tools:
+                    from atlas.skills.platform import PLATFORM_PREFIX
+
+                    for rs in self._skill_resolver.registry.list_all():
+                        if rs.spec.name.startswith(PLATFORM_PREFIX) and rs.callable:
+                            ctx._skills[rs.spec.name] = rs.callable
 
             # Execute the agent
             try:

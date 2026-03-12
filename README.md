@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tests-582_passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-987_passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/async-first-purple" alt="Async">
 </p>
@@ -57,7 +57,7 @@ This is the same idea that made Docker work for applications, npm for packages, 
 
 ## What Atlas Does Today
 
-Atlas is in active development. Here's what's shipped and working (582 tests).
+Atlas is in active development. Here's what's shipped and working (987 tests).
 
 ### Typed Agent Contracts
 
@@ -210,6 +210,95 @@ eval:
       field: category
 ```
 
+### Triggers & Scheduling
+
+Submit jobs automatically on a schedule or in response to events. Four trigger types — cron, interval, one-shot, and webhook — with YAML definitions and full CRUD API.
+
+```yaml
+# triggers/nightly-cleanup.yaml
+trigger:
+  name: nightly-cleanup
+  trigger_type: cron
+  cron_expr: "0 2 * * *"
+  agent_name: data-cleaner
+  input_data:
+    older_than_days: 90
+```
+
+```bash
+atlas trigger create --type cron --cron "*/5 * * * *" --agent echo --input '{"message":"ping"}'
+atlas trigger list
+atlas serve --agents ./agents --triggers-path ./triggers
+```
+
+Webhooks support optional HMAC-SHA256 signature validation:
+
+```bash
+curl -X POST http://localhost:8080/api/hooks/{trigger-id} \
+  -H "X-Atlas-Signature: sha256=..." \
+  -d '{"event": "deploy"}'
+```
+
+### Security & Sandboxing
+
+Agents declare permission scopes and secret requirements in their contracts. The runtime enforces them — no agent can access files, network, or secrets it hasn't declared. Secrets are resolved from environment variables or encrypted files, never hardcoded.
+
+```yaml
+agent:
+  name: data-processor
+  permissions:
+    file_system: [read]
+    network: [outbound]
+  requires:
+    secrets: [API_KEY, DB_PASSWORD]
+```
+
+```bash
+atlas serve --security-policy security.yaml --agents ./agents
+```
+
+### Skills & Platform Tools
+
+Agents declare tool dependencies via `requires.skills`. The runtime resolves and injects them at execution time — agents access tools through `context.skill()`. Atlas ships 12 platform tools (`atlas.*`) that expose runtime internals to agents.
+
+```yaml
+agent:
+  name: orchestrator-agent
+  requires:
+    platform_tools: true              # inject all atlas.* tools
+    skills: [custom-search, embedder] # inject specific skills
+```
+
+```python
+class Agent(AgentBase):
+    async def execute(self, input_data: dict) -> dict:
+        agents = await self.context.skill("atlas.registry.list", {})
+        result = await self.context.skill("custom-search", {"query": "..."})
+        return {"found": result}
+```
+
+### MCP Federation
+
+Atlas instances communicate via the [Model Context Protocol](https://modelcontextprotocol.io). One instance's agents and tools are transparently available to another — no custom glue, no shared infrastructure.
+
+```bash
+# Instance A: start with MCP server
+atlas serve --mcp-port 8400 --auth-token secret
+
+# Instance B: connect to A, federate tools and agents
+atlas serve --mcp-port 8401 --remote "lab=http://hostA:8400/mcp@secret"
+```
+
+Instance B now has all of A's agents as `lab.*` in its registry. Chains on B can reference `lab.translator` as a step — it executes on A and returns the result transparently.
+
+```yaml
+chain:
+  name: cross-instance-pipeline
+  steps:
+    - agent: lab.translator    # runs on Instance A
+    - agent: local-formatter   # runs on Instance B
+```
+
 ### Retry, Persistence, and Recovery
 
 Failed jobs auto-retry with configurable backoff. Jobs persist to SQLite and survive crashes — pending jobs reload on restart.
@@ -235,6 +324,10 @@ atlas orchestrator set cost-router           # swap routing at runtime
 | `GET /api/metrics` | Pool and per-agent metrics |
 | `GET /api/traces` | Execution traces |
 | `POST /api/orchestrator` | Swap routing policy |
+| `POST /api/triggers` | Create a trigger |
+| `GET /api/triggers` | List triggers |
+| `POST /api/triggers/{id}/fire` | Manually fire a trigger |
+| `POST /api/hooks/{id}` | Webhook receiver |
 | `WS /ws` | Live job status stream |
 
 For the full technical deep-dive — internal diagrams, module map, ordering guarantees, warm slot lifecycle — see **[Architecture](docs/ARCHITECTURE.md)**.
@@ -427,16 +520,19 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 | 4 | **Mediation Engine** — direct / mapped / coerce / LLM bridge strategies |
 | 5 | **Monitoring** — traces, token tracking, cost estimation, eval hooks |
 | 6 | **Orchestrator Override** — pluggable routing, hot-swap, reject/redirect |
+| 7 | **Triggers & Scheduling** — cron, interval, one-shot, webhooks with HMAC, trigger CRUD API |
+| 8 | **Security & Sandboxing** — permission scopes, resource limits, network policies, secret injection |
+| 9 | **Skills & Tool Use** — skill registry, resolver, platform tools (12 `atlas.*` tools), skill injection into agents |
+| 10A | **MCP Server** — Streamable HTTP + SSE transport, bearer token auth middleware, health endpoint |
+| 10B | **MCP Client** — remote tool federation, `RemoteToolProvider`, namespaced skill registration |
+| 10C | **Federated Chains** — `RemoteAgentProvider`, virtual agents in registry, `atlas.exec.run`, skill injection in chains |
 
 ### Next
 
 | Phase | What |
 |---|---|
-| 7 | **Triggers & Scheduling** — cron, webhooks, file-watch, scheduled chains |
-| 8 | **Security & Sandboxing** — permission scopes, resource limits, network policies, secret injection |
-| 9 | **Skills & Tool Use** — tool declarations in contracts, MCP bridging, agent-to-agent tools |
-| 10 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
-| 11 | **Registry Federation** — remote registries, agent publishing, cross-registry dependency resolution |
+| 11 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
+| 12 | **Agent Marketplace** — remote registries, agent publishing, cross-registry dependency resolution |
 
 ---
 
@@ -446,6 +542,7 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 - **[Contributing](CONTRIBUTING.md)** — development setup, testing, how to add agents
 - **[Example agents](agents/)** — 17 reference implementations
 - **[Example chains](chains/)** — multi-step pipeline definitions
+- **[Example triggers](triggers/)** — cron and webhook trigger definitions
 
 ## Requirements
 

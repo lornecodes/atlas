@@ -17,6 +17,9 @@ from atlas.store.job_store import JobStore
 
 if TYPE_CHECKING:
     from atlas.chains.executor import ChainExecutor
+    from atlas.security.policy import SecurityPolicy
+    from atlas.store.trigger_store import TriggerStore
+    from atlas.triggers.scheduler import TriggerScheduler
 
 from atlas.app_keys import (
     CHAIN_EXECUTOR as _CHAIN_EXECUTOR_KEY,
@@ -28,6 +31,10 @@ from atlas.app_keys import (
     REGISTRY as _REGISTRY_KEY,
     STORE as _STORE_KEY,
     TRACE_COLLECTOR as _TRACE_KEY,
+    TRIGGER_SCHEDULER as _TRIGGER_SCHEDULER_KEY,
+    TRIGGER_STORE as _TRIGGER_STORE_KEY,
+    SECURITY_POLICY as _SECURITY_POLICY_KEY,
+    SKILL_REGISTRY as _SKILL_REGISTRY_KEY,
 )
 
 logger = get_logger(__name__)
@@ -281,6 +288,32 @@ async def _handle_set_orchestrator(request: web.Request) -> web.Response:
     return web.json_response({"orchestrator": name})
 
 
+async def _handle_security_policy(request: web.Request) -> web.Response:
+    """GET /api/security/policy — view the active security policy."""
+    policy = request.app.get(_SECURITY_POLICY_KEY)
+    if not policy:
+        return web.json_response({"error": "No security policy configured"}, status=404)
+    return web.json_response(policy.to_dict())
+
+
+async def _handle_list_skills(request: web.Request) -> web.Response:
+    """GET /api/skills — list all registered skills."""
+    registry = request.app.get(_SKILL_REGISTRY_KEY)
+    if not registry:
+        return web.json_response({"error": "Skills not configured"}, status=404)
+    skills = [
+        {
+            "name": s.spec.name,
+            "version": s.spec.version,
+            "description": s.spec.description,
+            "input_schema": s.spec.input_schema.to_json_schema(),
+            "output_schema": s.spec.output_schema.to_json_schema(),
+        }
+        for s in registry.list_all()
+    ]
+    return web.json_response(skills)
+
+
 def create_app(
     registry: AgentRegistry,
     queue: JobQueue,
@@ -288,6 +321,10 @@ def create_app(
     store: JobStore | None = None,
     event_bus: EventBus | None = None,
     chain_executor: "ChainExecutor | None" = None,
+    trigger_store: "TriggerStore | None" = None,
+    trigger_scheduler: "TriggerScheduler | None" = None,
+    security_policy: "SecurityPolicy | None" = None,
+    skill_registry: Any = None,
 ) -> web.Application:
     """Create the aiohttp application with pool routes."""
     app = web.Application()
@@ -309,8 +346,22 @@ def create_app(
         from atlas.trace import TraceCollector
         app[_TRACE_KEY] = TraceCollector(event_bus)
 
+    if security_policy:
+        app[_SECURITY_POLICY_KEY] = security_policy
+
+    if skill_registry:
+        app[_SKILL_REGISTRY_KEY] = skill_registry
+
     if chain_executor:
         app[_CHAIN_EXECUTOR_KEY] = chain_executor
+
+    # Wire trigger system if available
+    if trigger_store:
+        app[_TRIGGER_STORE_KEY] = trigger_store
+        if trigger_scheduler:
+            app[_TRIGGER_SCHEDULER_KEY] = trigger_scheduler
+        from atlas.triggers.routes import setup_trigger_routes
+        setup_trigger_routes(app)
 
     # REST routes
     app.router.add_post("/api/jobs", _handle_submit)
@@ -340,5 +391,11 @@ def create_app(
     # Orchestrator routes
     app.router.add_get("/api/orchestrator", _handle_get_orchestrator)
     app.router.add_post("/api/orchestrator", _handle_set_orchestrator)
+
+    # Security routes
+    app.router.add_get("/api/security/policy", _handle_security_policy)
+
+    # Skill routes
+    app.router.add_get("/api/skills", _handle_list_skills)
 
     return app

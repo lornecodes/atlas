@@ -1,0 +1,8 @@
+trigger:
+  name: cron-echo
+  trigger_type: cron
+  cron_expr: "*/5 * * * *"
+  agent_name: echo
+  input_data:
+    message: "scheduled ping"
+  priority: 0

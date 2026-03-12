@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import TYPE_CHECKING, Any, Callable, Awaitable
+
+if TYPE_CHECKING:
+    from atlas.contract.permissions import PermissionsSpec
 
 
 class SpawnError(Exception):
     """Raised when an agent spawn fails."""
+
+
+class SkillInvocationError(Exception):
+    """Raised when a skill invocation fails."""
 
 
 @dataclass
@@ -56,6 +63,12 @@ class AgentContext:
     # Keys are agent-defined (e.g. "llm_provider", "langchain_chain", "anthropic_client")
     providers: dict[str, Any] = field(default_factory=dict)
 
+    # Resolved permissions for this execution (set by pool)
+    permissions: "PermissionsSpec | None" = None
+
+    # Resolved secrets for this execution (set by pool before execute)
+    secrets: dict[str, str] = field(default_factory=dict)
+
     # Execution metadata — agents write here during execute().
     # The pool reads this after execute() to build traces.
     # Keys: input_tokens, output_tokens, model, etc.
@@ -63,6 +76,10 @@ class AgentContext:
 
     # Spawn callback — injected by the pool, not set by agents
     _spawn_callback: SpawnCallback | None = field(default=None, repr=False)
+
+    # Resolved skills — injected by the pool, not set by agents
+    # Maps skill name → async callable(dict) -> dict
+    _skills: dict[str, Any] = field(default_factory=dict, repr=False)
 
     async def spawn(
         self,
@@ -99,3 +116,26 @@ class AgentContext:
         return await self._spawn_callback(
             agent_name, input_data, priority, self.depth, self.job_id
         )
+
+    async def skill(
+        self,
+        name: str,
+        input_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Invoke a platform skill by name.
+
+        Args:
+            name: Skill name (must be declared in requires.skills).
+            input_data: Input data for the skill.
+
+        Returns:
+            The skill's output dict.
+
+        Raises:
+            SkillInvocationError: If the skill is not available.
+        """
+        if name not in self._skills:
+            raise SkillInvocationError(
+                f"Skill '{name}' not available — declare it in requires.skills"
+            )
+        return await self._skills[name](input_data)

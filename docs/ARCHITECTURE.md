@@ -267,22 +267,127 @@ Token counts and model name flow back through `LLMResponse` → `AgentContext.ex
 
 ---
 
+## Triggers & Scheduling
+
+The trigger system submits jobs to the pool on a schedule or in response to events.
+
+### Trigger Types
+
+| Type | Fires When | Schedule Field |
+|---|---|---|
+| `cron` | Cron expression matches | `cron_expr` (5-field) |
+| `interval` | Every N seconds | `interval_seconds` |
+| `one_shot` | Once at a specific time, then disables | `fire_at` (unix timestamp) |
+| `webhook` | HTTP request hits `/api/hooks/{id}` | N/A (event-driven) |
+
+### Scheduler
+
+The `TriggerScheduler` runs as an async background task, polling the `TriggerStore` every `poll_interval` seconds for due triggers. When a trigger fires:
+
+1. Create a `JobData` from the trigger's `agent_name`, `input_data`, and `priority`
+2. Submit to the pool via `pool.submit()`
+3. Update trigger state: `last_fired`, `fire_count`, `last_job_id`
+4. Compute `next_fire` for recurring triggers; disable one-shot triggers
+5. Save updated trigger to store
+
+Webhook triggers bypass the polling loop — they fire immediately via `fire_webhook()` when an HTTP request arrives.
+
+### Webhook Security
+
+Webhook triggers support optional HMAC-SHA256 signature validation. If `webhook_secret` is set, the endpoint validates the `X-Atlas-Signature` header against the request body before firing.
+
+---
+
+## MCP Federation
+
+Atlas instances communicate via the [Model Context Protocol](https://modelcontextprotocol.io). Federation has three layers:
+
+### Layer 1: MCP Server (Phase 10A)
+
+Every Atlas instance can expose its skills as MCP tools over HTTP:
+
+```
+atlas serve --mcp-port 8400 --auth-token secret
+```
+
+The MCP server uses Streamable HTTP transport with optional bearer token auth. The `/health` endpoint is always open. SSE transport is supported for legacy clients.
+
+### Layer 2: Remote Tool Federation (Phase 10B)
+
+`RemoteToolProvider` connects to a remote MCP server, discovers its tools, and registers them as local skills with a namespace prefix:
+
+```
+atlas serve --remote "lab=http://host:8400/mcp@secret"
+```
+
+Remote tools appear as `lab.tool-name` in the local skill registry. Agents declare them as dependencies via `requires.skills: ["lab.tool-name"]` and call them via `context.skill()`.
+
+### Layer 3: Federated Chains (Phase 10C)
+
+`RemoteAgentProvider` discovers remote agents (via `atlas.registry.list` / `atlas.registry.describe`) and registers them as virtual agents in the local `AgentRegistry`. Each virtual agent's `execute()` calls `atlas.exec.run` on the remote instance.
+
+Chains reference remote agents directly — no wrapper code needed:
+
+```yaml
+chain:
+  name: cross-instance
+  steps:
+    - agent: lab.translator    # executes on remote instance
+    - agent: local-formatter   # executes locally
+```
+
+The `ChainRunner` resolves and injects skills for each step via an optional `SkillResolver`, matching the same injection path used by the `ExecutionPool`.
+
+---
+
+## Skills & Platform Tools
+
+### Skill System
+
+Skills are named async callables with typed I/O schemas. Agents declare dependencies via `requires.skills` in their contract, and the runtime injects them at execution time.
+
+```
+Agent contract (requires.skills: ["embedder"]) → SkillResolver → SkillRegistry → callable injected into AgentContext._skills
+```
+
+### Platform Tools (12 tools)
+
+| Tool | Description |
+|---|---|
+| `atlas.registry.list` | List registered agents |
+| `atlas.registry.describe` | Describe an agent's contract |
+| `atlas.registry.search` | Search agents by capability |
+| `atlas.exec.run` | Execute an agent synchronously (federation primitive) |
+| `atlas.exec.spawn` | Submit a job to the pool |
+| `atlas.exec.status` | Get a job's status |
+| `atlas.exec.cancel` | Cancel a pending job |
+| `atlas.queue.inspect` | Inspect the job queue |
+| `atlas.monitor.health` | Pool health stats |
+| `atlas.monitor.metrics` | Per-agent metrics |
+| `atlas.monitor.trace` | Get a single trace |
+| `atlas.monitor.traces` | List execution traces |
+
+Agents opt in via `requires.platform_tools: true`.
+
+---
+
 ## Module Map
 
 ```
 atlas/
 ├── contract/
-│   ├── registry.py      # AgentRegistry — discovery, semver, capability search
+│   ├── registry.py      # AgentRegistry — discovery, semver, virtual agents
 │   ├── schema.py        # JSON Schema validation (validate_input, validate_output)
-│   └── types.py         # AgentContract, SchemaSpec, ModelSpec, HardwareSpec
+│   ├── types.py         # AgentContract, SchemaSpec, RequiresSpec, PermissionsSpec
+│   └── permissions.py   # PermissionsSpec — file, network, subprocess, env scopes
 ├── pool/
-│   ├── executor.py      # ExecutionPool — concurrency, warm slots, orchestration
+│   ├── executor.py      # ExecutionPool — concurrency, warm slots, skill injection
 │   ├── job.py           # JobData — job record with status, timing, metadata
 │   ├── queue.py         # JobQueue — priority heap, backpressure, persistence
 │   └── slot_manager.py  # SlotManager — warm slot lifecycle (create/reuse/evict)
 ├── chains/
 │   ├── definition.py    # ChainDefinition, ChainStep — YAML chain specs
-│   ├── runner.py        # ChainRunner — execute chains with mediation
+│   ├── runner.py        # ChainRunner — mediation + optional skill injection
 │   └── executor.py      # ChainExecutor — async chain execution with status tracking
 ├── orchestrator/
 │   ├── protocol.py      # Orchestrator protocol + RoutingDecision
@@ -293,19 +398,44 @@ atlas/
 │   └── analyzer.py      # Compatibility analysis between schemas
 ├── runtime/
 │   ├── base.py          # AgentBase — abstract base class for all agents
-│   ├── context.py       # AgentContext — runtime context, spawn support
+│   ├── context.py       # AgentContext — spawn, skills, chain data
 │   ├── runner.py        # run_agent() — standalone agent execution
 │   └── llm_agent.py     # LLMAgent — base class for LLM-powered agents
+├── skills/
+│   ├── registry.py      # SkillRegistry — discovery + RegisteredSkill entries
+│   ├── resolver.py      # SkillResolver — resolve skill names to callables
+│   ├── platform.py      # PlatformToolProvider — 12 atlas.* platform tools
+│   ├── schema.py        # YAML loading + validation for skill.yaml
+│   └── types.py         # SkillSpec, SkillCallable, SkillError
+├── mcp/
+│   ├── server.py        # create_mcp_server() — wraps SkillRegistry as MCP tools
+│   ├── transport.py     # ASGI app — Streamable HTTP + SSE + health endpoint
+│   ├── auth.py          # BearerAuthMiddleware — timing-safe token validation
+│   ├── client.py        # RemoteToolProvider — connect to remote MCP, register skills
+│   ├── remote_agents.py # RemoteAgentProvider — virtual agents for federation
+│   └── stdio.py         # stdio transport for MCP
+├── security/
+│   ├── policy.py        # SecurityPolicy — YAML-defined permission + secret rules
+│   └── secrets.py       # SecretResolver, EnvSecretProvider, FileSecretProvider
 ├── llm/
 │   ├── provider.py      # LLMProvider protocol + LLMResponse
 │   ├── anthropic.py     # AnthropicProvider
 │   └── openai.py        # OpenAIProvider
+├── triggers/
+│   ├── models.py        # TriggerDefinition — cron, interval, one_shot, webhook
+│   ├── cron.py          # CronExpr — lightweight 5-field cron parser
+│   ├── scheduler.py     # TriggerScheduler — async tick loop, fires due triggers
+│   └── routes.py        # HTTP routes for trigger CRUD + webhook endpoint
 ├── store/
-│   └── job_store.py     # JobStore — SQLite persistence via aiosqlite
+│   ├── job_store.py     # JobStore — SQLite persistence via aiosqlite
+│   └── trigger_store.py # TriggerStore — SQLite persistence for triggers
 ├── cli/
-│   ├── app.py           # Typer CLI entry point
+│   ├── app.py           # Typer CLI — run, serve, mcp, list, inspect, validate
 │   ├── pool_commands.py # discover, run, serve commands
 │   ├── orchestrator_commands.py # orchestrator list/set/reset
+│   ├── trigger_commands.py # trigger create/list/get/delete/enable/disable
+│   ├── security_commands.py # security policy validation
+│   ├── skill_commands.py    # skill list/inspect
 │   └── formatting.py    # Table and output formatting
 ├── events.py            # EventBus — subscriber-isolated pub/sub
 ├── metrics.py           # MetricsCollector — latency, throughput, warm hits

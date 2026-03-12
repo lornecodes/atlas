@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import TYPE_CHECKING
 
 from atlas.contract.registry import AgentRegistry
 from atlas.contract.schema import validate_input, validate_output
@@ -14,6 +15,11 @@ from atlas.pool.job import JobData
 from atlas.pool.queue import JobQueue
 from atlas.pool.slot_manager import SlotManager, SlotState
 from atlas.runtime.context import SpawnResult
+
+if TYPE_CHECKING:
+    from atlas.security.policy import SecurityPolicy
+    from atlas.security.secrets import SecretResolver
+    from atlas.skills.resolver import SkillResolver
 
 logger = get_logger(__name__)
 
@@ -35,17 +41,24 @@ class ExecutionPool:
         idle_timeout: float = 300.0,
         warmup_timeout: float = 30.0,
         orchestrator: Orchestrator | None = None,
+        security_policy: "SecurityPolicy | None" = None,
+        secret_resolver: "SecretResolver | None" = None,
+        skill_resolver: "SkillResolver | None" = None,
     ) -> None:
         self._registry = registry
         self._queue = queue
         self._max_concurrent = max_concurrent
         self._idle_timeout = idle_timeout
         self._orchestrator: Orchestrator = orchestrator or DefaultOrchestrator()
+        self._security_policy = security_policy
+        self._secret_resolver = secret_resolver
+        self._skill_resolver = skill_resolver
 
         self._slots = SlotManager(
             registry,
             warm_pool_size=warm_pool_size,
             warmup_timeout=warmup_timeout,
+            security_policy=security_policy,
         )
 
         self._running_tasks: set[asyncio.Task] = set()
@@ -168,16 +181,77 @@ class ExecutionPool:
             if decision.priority is not None:
                 job.priority = decision.priority
 
-            # Acquire a slot (warm or cold)
-            slot, warmup_ms = await self._slots.acquire(job.agent_name)
+            # Resolve permissions and secrets
+            entry = self._registry.get(job.agent_name)
+            resolved_perms = None
+            resolved_secrets: dict[str, str] = {}
+
+            if entry and self._security_policy:
+                resolved_perms = self._security_policy.resolve_permissions(
+                    entry.contract.permissions
+                )
+                if resolved_perms.secrets and self._secret_resolver:
+                    try:
+                        resolved_secrets = await self._secret_resolver.resolve(
+                            resolved_perms.secrets
+                        )
+                    except Exception as e:
+                        await self._queue.update(
+                            job.id,
+                            status="failed",
+                            error=f"Secret resolution failed: {e}",
+                            completed_at=time.time(),
+                        )
+                        return
+
+            # Resolve skills
+            resolved_skills: dict = {}
+            if entry and entry.contract.requires.skills:
+                if not self._skill_resolver:
+                    await self._queue.update(
+                        job.id,
+                        status="failed",
+                        error="Agent requires skills but no SkillResolver configured",
+                        completed_at=time.time(),
+                    )
+                    return
+                try:
+                    resolved_skills = await self._skill_resolver.resolve(
+                        entry.contract.requires.skills
+                    )
+                except Exception as e:
+                    await self._queue.update(
+                        job.id,
+                        status="failed",
+                        error=f"Skill resolution failed: {e}",
+                        completed_at=time.time(),
+                    )
+                    return
+
+            # Inject platform tools if required
+            if entry and entry.contract.requires.platform_tools:
+                if self._skill_resolver:
+                    from atlas.skills.platform import PLATFORM_PREFIX
+                    for rs in self._skill_resolver.registry.list_all():
+                        if rs.spec.name.startswith(PLATFORM_PREFIX) and rs.callable:
+                            resolved_skills[rs.spec.name] = rs.callable
+
+            # Acquire a slot (warm or cold, or container if isolation=container)
+            slot, warmup_ms = await self._slots.acquire(
+                job.agent_name,
+                resolved_permissions=resolved_perms,
+                secrets=resolved_secrets,
+            )
 
             # Inject spawn context into the agent's context
-            entry = self._registry.get(job.agent_name)
             ctx = slot.instance.context
             ctx.job_id = job.id
             ctx.depth = job.metadata.get("_spawn_depth", 0)
             ctx.spawn_allowed = entry.contract.requires.spawn_agents if entry else False
             ctx._spawn_callback = self._spawn_callback
+            ctx.permissions = resolved_perms
+            ctx.secrets = resolved_secrets
+            ctx._skills = resolved_skills
 
             # Validate input
             if entry:

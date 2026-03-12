@@ -141,6 +141,27 @@ class AgentRegistry:
     def __len__(self) -> int:
         return len(self._agents)
 
+    def register_virtual(
+        self, contract: AgentContract, agent_class: type,
+    ) -> None:
+        """Register a virtual agent (no YAML file, no module path).
+
+        Used by RemoteAgentProvider to register remote agents as local entries.
+        """
+        entry = RegisteredAgent(
+            contract=contract,
+            source_path=Path("<virtual>"),
+            module_path=None,
+            _agent_class=agent_class,
+        )
+        if contract.name not in self._agents:
+            self._agents[contract.name] = {}
+        self._agents[contract.name][contract.version] = entry
+
+    def unregister(self, name: str) -> bool:
+        """Remove an agent by name. Returns True if found."""
+        return self._agents.pop(name, None) is not None
+
     def __contains__(self, name: str) -> bool:
         return name in self._agents
 

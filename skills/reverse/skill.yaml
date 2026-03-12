@@ -1,0 +1,22 @@
+skill:
+  name: "reverse"
+  version: "1.0.0"
+  description: "Reverses a string. Used for testing the skill system."
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+          description: "The text to reverse"
+      required: [text]
+
+  output:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+          description: "The reversed text"
+      required: [text]

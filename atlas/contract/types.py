@@ -6,6 +6,8 @@ import json as _json
 from dataclasses import dataclass, field
 from typing import Any
 
+from atlas.contract.permissions import PermissionsSpec
+
 
 class SchemaSpec:
     """JSON Schema describing agent I/O.
@@ -162,6 +164,7 @@ class AgentContract:
     requires: RequiresSpec = field(default_factory=RequiresSpec)
     hardware: HardwareSpec = field(default_factory=HardwareSpec)
     retry: RetrySpec = field(default_factory=RetrySpec)
+    permissions: PermissionsSpec = field(default_factory=PermissionsSpec)
     execution_timeout: float = 60.0
 
     @staticmethod
@@ -180,5 +183,6 @@ class AgentContract:
             requires=RequiresSpec.from_dict(agent.get("requires")),
             hardware=HardwareSpec.from_dict(agent.get("hardware")),
             retry=RetrySpec.from_dict(agent.get("retry")),
+            permissions=PermissionsSpec.from_dict(agent.get("permissions")),
             execution_timeout=float(agent.get("execution_timeout", 60.0)),
         )

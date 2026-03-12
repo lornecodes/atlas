@@ -1,0 +1,6 @@
+trigger:
+  name: webhook-echo
+  trigger_type: webhook
+  agent_name: echo
+  webhook_secret: ""
+  input_data: {}
