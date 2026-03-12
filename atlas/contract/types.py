@@ -109,6 +109,31 @@ class ModelSpec:
 
 
 @dataclass(frozen=True)
+class KnowledgeRequirement:
+    """Knowledge access requirements for an agent."""
+
+    enabled: bool = False
+    domains: list[str] = field(default_factory=list)
+    read_domains: list[str] = field(default_factory=lambda: ["*"])
+    write_domains: list[str] = field(default_factory=list)
+
+    @staticmethod
+    def from_dict(d: Any) -> KnowledgeRequirement:
+        if not d:
+            return KnowledgeRequirement()
+        if isinstance(d, bool):
+            return KnowledgeRequirement(enabled=d, read_domains=["*"])
+        if isinstance(d, dict):
+            return KnowledgeRequirement(
+                enabled=True,
+                domains=d.get("domains", []),
+                read_domains=d.get("read_domains", ["*"]),
+                write_domains=d.get("write_domains", []),
+            )
+        return KnowledgeRequirement()
+
+
+@dataclass(frozen=True)
 class RequiresSpec:
     """What the agent needs from the platform."""
 
@@ -116,6 +141,7 @@ class RequiresSpec:
     spawn_agents: bool = False
     skills: list[str] = field(default_factory=list)
     memory: bool = False
+    knowledge: KnowledgeRequirement = field(default_factory=KnowledgeRequirement)
 
     @staticmethod
     def from_dict(d: dict[str, Any] | None) -> RequiresSpec:
@@ -126,6 +152,7 @@ class RequiresSpec:
             spawn_agents=d.get("spawn_agents", False),
             skills=d.get("skills", []),
             memory=d.get("memory", False),
+            knowledge=KnowledgeRequirement.from_dict(d.get("knowledge")),
         )
 
 

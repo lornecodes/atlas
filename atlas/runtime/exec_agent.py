@@ -52,6 +52,16 @@ class ExecAgent(AgentBase):
         if self.context._memory_provider:
             envelope["memory"] = await self.context.memory_read()
 
+        # Include relevant knowledge if available
+        if self.context._knowledge_provider:
+            from atlas.runtime.dynamic_llm_agent import _extract_search_text
+            search_query = _extract_search_text(input_data)
+            results = await self.context.knowledge_search(search_query, limit=5) if search_query else []
+            envelope["knowledge"] = [
+                {"id": e.id, "domain": e.domain, "content": e.content, "tags": e.tags}
+                for e in results
+            ]
+
         proc = await asyncio.create_subprocess_exec(
             *command,
             stdin=asyncio.subprocess.PIPE,
@@ -90,5 +100,19 @@ class ExecAgent(AgentBase):
             await self.context.memory_append(str(output.pop("_memory_append")))
         elif "_memory_append" in output:
             output.pop("_memory_append")  # Strip even if no memory provider
+
+        # Handle knowledge store from exec agent
+        if "_knowledge_store" in output and self.context._knowledge_provider:
+            store_data = output.pop("_knowledge_store")
+            items = store_data if isinstance(store_data, list) else [store_data]
+            for item in items:
+                if isinstance(item, dict):
+                    await self.context.knowledge_store(
+                        content=item.get("content", ""),
+                        domain=item.get("domain", "general"),
+                        tags=item.get("tags", []),
+                    )
+        elif "_knowledge_store" in output:
+            output.pop("_knowledge_store")
 
         return output

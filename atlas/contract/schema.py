@@ -52,6 +52,19 @@ _CONTRACT_META_SCHEMA: dict[str, Any] = {
                         "spawn_agents": {"type": "boolean"},
                         "skills": {"type": "array", "items": {"type": "string"}},
                         "memory": {"type": "boolean"},
+                        "knowledge": {
+                            "oneOf": [
+                                {"type": "boolean"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "domains": {"type": "array", "items": {"type": "string"}},
+                                        "read_domains": {"type": "array", "items": {"type": "string"}},
+                                        "write_domains": {"type": "array", "items": {"type": "string"}},
+                                    },
+                                },
+                            ],
+                        },
                     },
                 },
                 "provider": {

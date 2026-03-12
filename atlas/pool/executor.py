@@ -45,6 +45,8 @@ class ExecutionPool:
         secret_resolver: "SecretResolver | None" = None,
         skill_resolver: "SkillResolver | None" = None,
         memory_provider: Any = None,
+        knowledge_provider: Any = None,
+        knowledge_policy: Any = None,
     ) -> None:
         self._registry = registry
         self._queue = queue
@@ -55,6 +57,8 @@ class ExecutionPool:
         self._secret_resolver = secret_resolver
         self._skill_resolver = skill_resolver
         self._memory_provider = memory_provider
+        self._knowledge_provider = knowledge_provider
+        self._knowledge_policy = knowledge_policy
 
         self._slots = SlotManager(
             registry,
@@ -267,6 +271,20 @@ class ExecutionPool:
             # Inject shared memory if agent opts in
             if entry and entry.contract.requires.memory and self._memory_provider:
                 ctx._memory_provider = self._memory_provider
+
+            # Inject knowledge if agent opts in
+            if entry and entry.contract.requires.knowledge.enabled and self._knowledge_provider:
+                ctx._knowledge_provider = self._knowledge_provider
+                from atlas.knowledge.acl import KnowledgeACL
+                ctx._knowledge_acl = KnowledgeACL(
+                    read_domains=entry.contract.requires.knowledge.read_domains,
+                    write_domains=entry.contract.requires.knowledge.write_domains,
+                    protected_domains=(
+                        self._knowledge_policy.protected_domains
+                        if self._knowledge_policy
+                        else frozenset()
+                    ),
+                )
 
             # Inject working directory for exec agents
             if entry and entry.contract.provider.type == "exec":

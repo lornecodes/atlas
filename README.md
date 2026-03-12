@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tests-1045_passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1137_passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/async-first-purple" alt="Async">
 </p>
@@ -57,7 +57,7 @@ This is the same idea that made Docker work for applications, npm for packages, 
 
 ## What Atlas Does Today
 
-Atlas is in active development. Here's what's shipped and working (1045 tests).
+Atlas is in active development. Here's what's shipped and working (1137 tests).
 
 ### Typed Agent Contracts
 
@@ -402,6 +402,58 @@ atlas serve --agents ./agents --memory memory.md
 atlas serve --agents ./agents --memory-url http://localhost:9000/memory
 ```
 
+### Knowledge Base & Access Control
+
+Agents can search, store, and share structured knowledge — scoped by domain with per-agent read/write ACLs. Orthogonal to shared memory: memory is "what happened this run", knowledge is "what do we know about X".
+
+```yaml
+agent:
+  name: research-agent
+  requires:
+    knowledge:
+      read_domains: ["*"]          # can search all domains
+      write_domains: [ai-systems]  # can only write to ai-systems
+```
+
+```python
+class Agent(AgentBase):
+    async def execute(self, input_data: dict) -> dict:
+        # Search existing knowledge
+        results = await self.context.knowledge_search("rate limits", domain="api")
+
+        # Store new knowledge (ACL-enforced)
+        await self.context.knowledge_store(
+            "API rate limit is 200/min",
+            domain="ai-systems",
+            tags=["api", "rate-limits"],
+        )
+
+        return {"found": len(results)}
+```
+
+For `llm` provider agents, relevant knowledge is auto-searched and injected into the system prompt, with `knowledge_store` and `knowledge_search` exposed as tools — no code needed.
+
+For `exec` provider agents, knowledge arrives in the stdin envelope and writes back via a `_knowledge_store` key in the output.
+
+Three pluggable providers ship out of the box:
+
+- **File** — markdown files with YAML frontmatter, organized by domain subdirectories (mini-Kronos)
+- **HTTP** — REST hook for external knowledge systems
+- **MCP** — delegates to an MCP server (e.g., Kronos vault)
+
+Protected domains prevent wildcard writes — an agent with `write_domains: ["*"]` still can't write to `physics` if it's protected. Must be explicitly listed.
+
+```bash
+# File-backed knowledge
+atlas serve --agents ./agents --knowledge ./knowledge
+
+# HTTP hook for external knowledge systems
+atlas serve --agents ./agents --knowledge-url http://localhost:9000/knowledge
+
+# With protected domain policy
+atlas serve --agents ./agents --knowledge ./knowledge --knowledge-policy policy.yaml
+```
+
 ### Retry, Persistence, and Recovery
 
 Failed jobs auto-retry with configurable backoff. Jobs persist to SQLite and survive crashes — pending jobs reload on restart.
@@ -662,13 +714,14 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 | 10B | **MCP Client** — remote tool federation, `RemoteToolProvider`, namespaced skill registration |
 | 10C | **Federated Chains** — `RemoteAgentProvider`, virtual agents in registry, `atlas.exec.run`, skill injection in chains |
 | 11 | **Dynamic Agents & Shared Memory** — exec provider (any language), llm provider (YAML-only), pluggable shared memory (file/HTTP) |
+| 12 | **Knowledge Base & Access Control** — pluggable knowledge providers (file/MCP/HTTP), domain-scoped permissions, agent-level read/write ACLs, path traversal protection |
 
 ### Next
 
 | Phase | What |
 |---|---|
-| 12 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
 | 13 | **Agent Marketplace** — remote registries, agent publishing, cross-registry dependency resolution |
+| 14 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
 
 ---
 

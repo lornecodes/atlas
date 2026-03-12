@@ -88,6 +88,12 @@ class AgentContext:
     # Shared memory provider — injected by pool if contract requires.memory is True
     _memory_provider: Any = field(default=None, repr=False)
 
+    # Knowledge provider — injected by pool if contract requires.knowledge is enabled
+    _knowledge_provider: Any = field(default=None, repr=False)
+
+    # Knowledge ACL — built from contract requirements + operator policy
+    _knowledge_acl: Any = field(default=None, repr=False)
+
     async def spawn(
         self,
         agent_name: str,
@@ -164,3 +170,84 @@ class AgentContext:
         if not self._memory_provider:
             raise RuntimeError("Memory not enabled — set requires.memory: true in contract")
         await self._memory_provider.append(entry)
+
+    # -- Knowledge methods (ACL-enforced) --
+
+    async def knowledge_search(
+        self,
+        query: str,
+        *,
+        domain: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 10,
+    ) -> list[Any]:
+        """Search knowledge entries. ACL-filtered."""
+        if not self._knowledge_provider:
+            return []
+        results = await self._knowledge_provider.search(
+            query, domain=domain, tags=tags, limit=limit
+        )
+        if self._knowledge_acl:
+            results = [e for e in results if self._knowledge_acl.can_read(e.domain)]
+        return results
+
+    async def knowledge_get(self, entry_id: str) -> Any:
+        """Get a knowledge entry by ID. Returns None if not found or ACL-denied."""
+        if not self._knowledge_provider:
+            return None
+        entry = await self._knowledge_provider.get(entry_id)
+        if entry and self._knowledge_acl and not self._knowledge_acl.can_read(entry.domain):
+            return None
+        return entry
+
+    async def knowledge_store(
+        self,
+        content: str,
+        *,
+        domain: str = "general",
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create a knowledge entry. Raises PermissionError if ACL denies write."""
+        if not self._knowledge_provider:
+            raise RuntimeError(
+                "Knowledge not enabled — set requires.knowledge in contract"
+            )
+        if self._knowledge_acl and not self._knowledge_acl.can_write(domain):
+            raise PermissionError(
+                f"Agent not allowed to write to knowledge domain '{domain}'"
+            )
+        from atlas.knowledge.provider import KnowledgeEntry
+
+        entry = KnowledgeEntry(
+            id="",
+            content=content,
+            domain=domain,
+            tags=tags or [],
+            metadata=metadata or {},
+        )
+        return await self._knowledge_provider.create(entry)
+
+    async def knowledge_update(
+        self,
+        entry_id: str,
+        *,
+        content: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Update a knowledge entry. Raises PermissionError if ACL denies write."""
+        if not self._knowledge_provider:
+            raise RuntimeError(
+                "Knowledge not enabled — set requires.knowledge in contract"
+            )
+        existing = await self._knowledge_provider.get(entry_id)
+        if not existing:
+            return None
+        if self._knowledge_acl and not self._knowledge_acl.can_write(existing.domain):
+            raise PermissionError(
+                f"Agent not allowed to write to knowledge domain '{existing.domain}'"
+            )
+        return await self._knowledge_provider.update(
+            entry_id, content=content, tags=tags, metadata=metadata
+        )

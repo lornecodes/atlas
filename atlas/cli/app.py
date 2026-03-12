@@ -211,6 +211,9 @@ def serve(
     memory: str | None = typer.Option(None, "--memory", help="File path for shared agent memory (e.g. memory.md)"),
     memory_url: str | None = typer.Option(None, "--memory-url", help="HTTP URL for external memory provider"),
     memory_auth: str | None = typer.Option(None, "--memory-auth", help="Auth token for HTTP memory provider"),
+    knowledge: str | None = typer.Option(None, "--knowledge", help="Directory path for file-based knowledge store"),
+    knowledge_url: str | None = typer.Option(None, "--knowledge-url", help="HTTP URL for external knowledge provider"),
+    knowledge_policy: str | None = typer.Option(None, "--knowledge-policy", help="Path to knowledge ACL policy YAML"),
 ) -> None:
     """Start the HTTP API server with an execution pool."""
     try:
@@ -292,6 +295,25 @@ def serve(
             mem_provider = HttpMemoryProvider(memory_url, auth_token=memory_auth)
             typer.echo(f"Shared memory: {memory_url}")
 
+        # Set up knowledge if configured
+        know_provider = None
+        know_policy = None
+        if knowledge:
+            from atlas.knowledge.file_provider import FileKnowledgeProvider
+            know_provider = FileKnowledgeProvider(knowledge)
+            typer.echo(f"Knowledge store: {knowledge}")
+        elif knowledge_url:
+            from atlas.knowledge.http_provider import HttpKnowledgeProvider
+            know_provider = HttpKnowledgeProvider(knowledge_url)
+            typer.echo(f"Knowledge store: {knowledge_url}")
+
+        if knowledge_policy:
+            import yaml as _yaml
+            from atlas.knowledge.acl import KnowledgeACL
+            with open(knowledge_policy) as f:
+                know_policy = KnowledgeACL.from_dict(_yaml.safe_load(f))
+            typer.echo(f"Knowledge ACL policy loaded from {knowledge_policy}")
+
         queue = JobQueue(store=store, event_bus=bus)
         pool = ExecutionPool(
             registry, queue,
@@ -301,6 +323,8 @@ def serve(
             security_policy=sec_policy,
             secret_resolver=secret_resolver,
             memory_provider=mem_provider,
+            knowledge_provider=know_provider,
+            knowledge_policy=know_policy,
         )
 
         # Register platform tools (needs pool to exist first)
