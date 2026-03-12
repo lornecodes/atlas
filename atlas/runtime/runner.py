@@ -62,6 +62,11 @@ async def run_agent(
 
     # Instantiate and execute
     ctx = context or AgentContext()
+
+    # Inject agent directory for exec providers
+    if entry.contract.provider.type == "exec" and "_agent_dir" not in ctx.metadata:
+        ctx.metadata["_agent_dir"] = str(entry.source_path.parent)
+
     agent = agent_class(entry.contract, ctx)
     timeout = entry.contract.execution_timeout
 

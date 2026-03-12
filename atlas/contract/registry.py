@@ -49,12 +49,29 @@ class AgentRegistry:
         path = Path(path)
         contract = load_contract(path)
         agent_dir = path.parent
-        module_path = agent_dir / "agent.py"
+
+        # Determine agent class based on provider type
+        provider_type = contract.provider.type
+        if provider_type == "exec":
+            from atlas.runtime.exec_agent import ExecAgent
+
+            agent_class: type | None = ExecAgent
+            module_path = None
+        elif provider_type == "llm":
+            from atlas.runtime.dynamic_llm_agent import DynamicLLMAgent
+
+            agent_class = DynamicLLMAgent
+            module_path = None
+        else:
+            # Default: python provider — needs agent.py
+            module_path = agent_dir / "agent.py"
+            agent_class = None  # lazy-loaded via RegisteredAgent.agent_class
 
         entry = RegisteredAgent(
             contract=contract,
             source_path=path,
-            module_path=module_path if module_path.exists() else None,
+            module_path=module_path if module_path and module_path.exists() else None,
+            _agent_class=agent_class,
         )
 
         if contract.name not in self._agents:

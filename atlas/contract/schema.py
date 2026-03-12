@@ -51,7 +51,24 @@ _CONTRACT_META_SCHEMA: dict[str, Any] = {
                         "platform_tools": {"type": "boolean"},
                         "spawn_agents": {"type": "boolean"},
                         "skills": {"type": "array", "items": {"type": "string"}},
+                        "memory": {"type": "boolean"},
                     },
+                },
+                "provider": {
+                    "oneOf": [
+                        {"type": "string", "enum": ["python", "exec", "llm"]},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string", "enum": ["python", "exec", "llm"]},
+                                "command": {"type": "array", "items": {"type": "string"}},
+                                "system_prompt": {"type": "string"},
+                                "focus": {"type": "string"},
+                                "output_format": {"type": "string", "enum": ["json", "text"]},
+                                "max_iterations": {"type": "integer", "minimum": 1},
+                            },
+                        },
+                    ],
                 },
                 "hardware": {"type": "object"},
             },

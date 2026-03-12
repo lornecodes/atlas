@@ -115,6 +115,7 @@ class RequiresSpec:
     platform_tools: bool = False
     spawn_agents: bool = False
     skills: list[str] = field(default_factory=list)
+    memory: bool = False
 
     @staticmethod
     def from_dict(d: dict[str, Any] | None) -> RequiresSpec:
@@ -124,6 +125,7 @@ class RequiresSpec:
             platform_tools=d.get("platform_tools", False),
             spawn_agents=d.get("spawn_agents", False),
             skills=d.get("skills", []),
+            memory=d.get("memory", False),
         )
 
 
@@ -142,6 +144,40 @@ class RetrySpec:
             max_retries=int(d.get("max_retries", 0)),
             backoff_base=float(d.get("backoff_base", 2.0)),
         )
+
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    """How the agent is executed.
+
+    - python (default): AgentBase subclass in agent.py
+    - exec: external executable, JSON on stdin/stdout
+    - llm: YAML-only LLM agent with tool-use loop
+    """
+
+    type: str = "python"  # python | exec | llm
+    command: list[str] = field(default_factory=list)  # exec only
+    system_prompt: str = ""  # llm only — full system prompt
+    focus: str = ""  # llm only — short directive (alternative to system_prompt)
+    output_format: str = "json"  # llm only — json | text
+    max_iterations: int = 5  # llm only — tool-use loop cap
+
+    @staticmethod
+    def from_dict(d: Any) -> ProviderSpec:
+        if not d:
+            return ProviderSpec()
+        if isinstance(d, str):
+            return ProviderSpec(type=d)
+        if isinstance(d, dict):
+            return ProviderSpec(
+                type=d.get("type", "python"),
+                command=d.get("command", []),
+                system_prompt=d.get("system_prompt", ""),
+                focus=d.get("focus", ""),
+                output_format=d.get("output_format", "json"),
+                max_iterations=int(d.get("max_iterations", 5)),
+            )
+        return ProviderSpec()
 
 
 @dataclass(frozen=True)
@@ -165,6 +201,7 @@ class AgentContract:
     hardware: HardwareSpec = field(default_factory=HardwareSpec)
     retry: RetrySpec = field(default_factory=RetrySpec)
     permissions: PermissionsSpec = field(default_factory=PermissionsSpec)
+    provider: ProviderSpec = field(default_factory=ProviderSpec)
     execution_timeout: float = 60.0
 
     @staticmethod
@@ -184,5 +221,6 @@ class AgentContract:
             hardware=HardwareSpec.from_dict(agent.get("hardware")),
             retry=RetrySpec.from_dict(agent.get("retry")),
             permissions=PermissionsSpec.from_dict(agent.get("permissions")),
+            provider=ProviderSpec.from_dict(agent.get("provider")),
             execution_timeout=float(agent.get("execution_timeout", 60.0)),
         )

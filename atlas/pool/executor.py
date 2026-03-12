@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from atlas.contract.registry import AgentRegistry
 from atlas.contract.schema import validate_input, validate_output
@@ -44,6 +44,7 @@ class ExecutionPool:
         security_policy: "SecurityPolicy | None" = None,
         secret_resolver: "SecretResolver | None" = None,
         skill_resolver: "SkillResolver | None" = None,
+        memory_provider: Any = None,
     ) -> None:
         self._registry = registry
         self._queue = queue
@@ -53,6 +54,7 @@ class ExecutionPool:
         self._security_policy = security_policy
         self._secret_resolver = secret_resolver
         self._skill_resolver = skill_resolver
+        self._memory_provider = memory_provider
 
         self._slots = SlotManager(
             registry,
@@ -252,6 +254,23 @@ class ExecutionPool:
             ctx.permissions = resolved_perms
             ctx.secrets = resolved_secrets
             ctx._skills = resolved_skills
+
+            # Inject skill specs for DynamicLLMAgent tool definitions
+            if self._skill_resolver and entry and entry.contract.requires.skills:
+                skill_specs = {}
+                for sname in entry.contract.requires.skills:
+                    reg = self._skill_resolver.registry.get(sname)
+                    if reg:
+                        skill_specs[sname] = reg.spec
+                ctx._skill_specs = skill_specs
+
+            # Inject shared memory if agent opts in
+            if entry and entry.contract.requires.memory and self._memory_provider:
+                ctx._memory_provider = self._memory_provider
+
+            # Inject working directory for exec agents
+            if entry and entry.contract.provider.type == "exec":
+                ctx.metadata["_agent_dir"] = str(entry.source_path.parent)
 
             # Validate input
             if entry:

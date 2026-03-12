@@ -1,0 +1,30 @@
+agent:
+  name: exec-echo
+  version: "1.0.0"
+  description: "Echo agent implemented as an external process (exec provider demo)"
+
+  provider:
+    type: exec
+    command: ["python", "run.py"]
+
+  input:
+    schema:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+  output:
+    schema:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+  capabilities:
+    - echo
+    - exec-demo
+
+  execution_timeout: 10.0

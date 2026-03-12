@@ -81,6 +81,13 @@ class AgentContext:
     # Maps skill name → async callable(dict) -> dict
     _skills: dict[str, Any] = field(default_factory=dict, repr=False)
 
+    # Resolved skill specs — injected by the pool alongside _skills
+    # Maps skill name → SkillSpec (used by DynamicLLMAgent for tool definitions)
+    _skill_specs: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    # Shared memory provider — injected by pool if contract requires.memory is True
+    _memory_provider: Any = field(default=None, repr=False)
+
     async def spawn(
         self,
         agent_name: str,
@@ -139,3 +146,21 @@ class AgentContext:
                 f"Skill '{name}' not available — declare it in requires.skills"
             )
         return await self._skills[name](input_data)
+
+    async def memory_read(self) -> str:
+        """Read shared memory. Returns empty string if memory not enabled."""
+        if not self._memory_provider:
+            return ""
+        return await self._memory_provider.read()
+
+    async def memory_write(self, content: str) -> None:
+        """Overwrite shared memory."""
+        if not self._memory_provider:
+            raise RuntimeError("Memory not enabled — set requires.memory: true in contract")
+        await self._memory_provider.write(content)
+
+    async def memory_append(self, entry: str) -> None:
+        """Append to shared memory."""
+        if not self._memory_provider:
+            raise RuntimeError("Memory not enabled — set requires.memory: true in contract")
+        await self._memory_provider.append(entry)

@@ -208,6 +208,9 @@ def serve(
     mcp_port: int | None = typer.Option(None, "--mcp-port", help="MCP HTTP server port (enables MCP alongside REST)"),
     auth_token: str | None = typer.Option(None, "--auth-token", help="Bearer token for MCP auth"),
     remote: list[str] | None = typer.Option(None, "--remote", help="Remote MCP server (name=url or name=url@token)"),
+    memory: str | None = typer.Option(None, "--memory", help="File path for shared agent memory (e.g. memory.md)"),
+    memory_url: str | None = typer.Option(None, "--memory-url", help="HTTP URL for external memory provider"),
+    memory_auth: str | None = typer.Option(None, "--memory-auth", help="Auth token for HTTP memory provider"),
 ) -> None:
     """Start the HTTP API server with an execution pool."""
     try:
@@ -278,6 +281,17 @@ def serve(
             if count:
                 typer.echo(f"Loaded {count} skill(s) from {skills_path}")
 
+        # Set up shared memory if configured
+        mem_provider = None
+        if memory:
+            from atlas.memory.file_provider import FileMemoryProvider
+            mem_provider = FileMemoryProvider(memory)
+            typer.echo(f"Shared memory: {memory}")
+        elif memory_url:
+            from atlas.memory.http_provider import HttpMemoryProvider
+            mem_provider = HttpMemoryProvider(memory_url, auth_token=memory_auth)
+            typer.echo(f"Shared memory: {memory_url}")
+
         queue = JobQueue(store=store, event_bus=bus)
         pool = ExecutionPool(
             registry, queue,
@@ -286,6 +300,7 @@ def serve(
             orchestrator=orch,
             security_policy=sec_policy,
             secret_resolver=secret_resolver,
+            memory_provider=mem_provider,
         )
 
         # Register platform tools (needs pool to exist first)

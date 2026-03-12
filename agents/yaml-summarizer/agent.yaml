@@ -1,0 +1,41 @@
+agent:
+  name: yaml-summarizer
+  version: "1.0.0"
+  description: "Text summarizer defined entirely in YAML — no Python code needed"
+
+  provider:
+    type: llm
+    system_prompt: |
+      You are a concise text summarizer. You will receive input as a JSON object
+      with a "text" field. Return a JSON object with a "summary" field containing
+      a 1-3 sentence summary of the text. Return ONLY the JSON object, no markdown.
+    output_format: json
+    max_iterations: 1
+
+  model:
+    preference: fast
+
+  input:
+    schema:
+      type: object
+      properties:
+        text:
+          type: string
+          description: "The text to summarize"
+      required: [text]
+
+  output:
+    schema:
+      type: object
+      properties:
+        summary:
+          type: string
+      required: [summary]
+
+  capabilities:
+    - summarization
+    - text-processing
+    - llm
+    - yaml-only
+
+  execution_timeout: 30.0
