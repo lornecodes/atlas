@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tests-987_passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1045_passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/async-first-purple" alt="Async">
 </p>
@@ -57,7 +57,7 @@ This is the same idea that made Docker work for applications, npm for packages, 
 
 ## What Atlas Does Today
 
-Atlas is in active development. Here's what's shipped and working (987 tests).
+Atlas is in active development. Here's what's shipped and working (1045 tests).
 
 ### Typed Agent Contracts
 
@@ -299,6 +299,109 @@ chain:
     - agent: local-formatter   # runs on Instance B
 ```
 
+### Dynamic Agents — Write Agents in Any Language
+
+Not every agent needs Python. Atlas supports three provider types — all running in the same pool, same chains, same metrics.
+
+**`exec` provider** — run any executable as an agent. JSON on stdin, JSON on stdout. Write agents in Rust, Go, Node, shell scripts — anything that can read and write JSON.
+
+```yaml
+# agents/my-rust-agent/agent.yaml
+agent:
+  name: my-rust-agent
+  version: "1.0.0"
+  provider:
+    type: exec
+    command: ["./target/release/my-agent"]
+  input:
+    schema:
+      type: object
+      properties:
+        message: { type: string }
+      required: [message]
+  output:
+    schema:
+      type: object
+      properties:
+        result: { type: string }
+      required: [result]
+```
+
+The runtime sends a JSON envelope on stdin (`{input, context, memory}`) and reads JSON from stdout. No Python, no SDK, no boilerplate.
+
+**`llm` provider** — define LLM agents in pure YAML. No code at all. System prompt, model preference, skills as tools — the runtime handles the tool-use loop.
+
+```yaml
+# agents/yaml-summarizer/agent.yaml
+agent:
+  name: yaml-summarizer
+  version: "1.0.0"
+  provider:
+    type: llm
+    system_prompt: |
+      You are a concise text summarizer. Return a JSON object
+      with a "summary" field containing a 1-3 sentence summary.
+    output_format: json
+    max_iterations: 1
+  model:
+    preference: fast
+  input:
+    schema:
+      type: object
+      properties:
+        text: { type: string }
+      required: [text]
+  output:
+    schema:
+      type: object
+      properties:
+        summary: { type: string }
+      required: [summary]
+```
+
+No `agent.py` needed. Skills declared in `requires.skills` are automatically exposed as tools to the LLM.
+
+**`python` provider** (default) — existing behavior, unchanged. Write an `AgentBase` subclass in `agent.py`.
+
+All three provider types are discovered, registered, and executed identically. Consumers don't know or care which provider is behind a contract.
+
+### Shared Memory
+
+Agents in the pool can learn from each other. Opt in with `requires.memory: true` — all participating agents share a memory pool that persists across executions.
+
+```yaml
+agent:
+  name: learning-agent
+  requires:
+    memory: true
+```
+
+```python
+class Agent(AgentBase):
+    async def execute(self, input_data: dict) -> dict:
+        # Read what previous agents learned
+        memory = await self.context.memory_read()
+
+        # Add your own learnings
+        await self.context.memory_append("API rate limit is 100/min")
+
+        return {"result": "..."}
+```
+
+For `llm` provider agents, memory is automatically injected into the system prompt and a `memory_append` tool is exposed — no code needed.
+
+For `exec` provider agents, memory arrives in the stdin envelope and writes back via a `_memory_append` key in the output.
+
+File-backed by default (`memory.md`), pluggable via HTTP hook for external systems (Redis, vector DB, etc.).
+
+```bash
+# File-backed (default)
+atlas serve --agents ./agents --memory memory.md
+
+# HTTP hook for external memory
+atlas serve --agents ./agents --memory-url http://localhost:9000/memory
+```
+
 ### Retry, Persistence, and Recovery
 
 Failed jobs auto-retry with configurable backoff. Jobs persist to SQLite and survive crashes — pending jobs reload on restart.
@@ -483,6 +586,38 @@ atlas discover ./agents
 atlas run echo '{"message": "hello"}'
 ```
 
+### Or skip Python entirely
+
+```yaml
+# agents/greeter/agent.yaml — no agent.py needed
+agent:
+  name: greeter
+  version: "1.0.0"
+  provider:
+    type: llm
+    system_prompt: "You are a friendly greeter. Return {\"greeting\": \"...\"}"
+    output_format: json
+  model:
+    preference: fast
+  input:
+    schema:
+      type: object
+      properties:
+        name: { type: string }
+      required: [name]
+  output:
+    schema:
+      type: object
+      properties:
+        greeting: { type: string }
+      required: [greeting]
+```
+
+```bash
+atlas run greeter '{"name": "world"}'
+# {"greeting": "Hello, world! Welcome!"}
+```
+
 ### Submit to a pool
 
 ```python
@@ -526,13 +661,14 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 | 10A | **MCP Server** — Streamable HTTP + SSE transport, bearer token auth middleware, health endpoint |
 | 10B | **MCP Client** — remote tool federation, `RemoteToolProvider`, namespaced skill registration |
 | 10C | **Federated Chains** — `RemoteAgentProvider`, virtual agents in registry, `atlas.exec.run`, skill injection in chains |
+| 11 | **Dynamic Agents & Shared Memory** — exec provider (any language), llm provider (YAML-only), pluggable shared memory (file/HTTP) |
 
 ### Next
 
 | Phase | What |
 |---|---|
-| 11 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
-| 12 | **Agent Marketplace** — remote registries, agent publishing, cross-registry dependency resolution |
+| 12 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
+| 13 | **Agent Marketplace** — remote registries, agent publishing, cross-registry dependency resolution |
 
 ---
 
@@ -540,7 +676,7 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 
 - **[Architecture](docs/ARCHITECTURE.md)** — technical deep-dive, diagrams, module map
 - **[Contributing](CONTRIBUTING.md)** — development setup, testing, how to add agents
-- **[Example agents](agents/)** — 17 reference implementations
+- **[Example agents](agents/)** — 19 reference implementations (Python, exec, YAML-only LLM)
 - **[Example chains](chains/)** — multi-step pipeline definitions
 - **[Example triggers](triggers/)** — cron and webhook trigger definitions
 
