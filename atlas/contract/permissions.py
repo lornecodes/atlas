@@ -40,12 +40,12 @@ class PermissionsSpec:
             )
 
         return PermissionsSpec(
-            filesystem=d.get("filesystem", ["read"]),
-            network=d.get("network", ["outbound"]),
+            filesystem=list(d.get("filesystem", ["read"])),
+            network=list(d.get("network", ["outbound"])),
             spawn=d.get("spawn", False),
             max_memory_mb=int(d.get("max_memory_mb", 512)),
             max_cpu_seconds=int(d.get("max_cpu_seconds", 60)),
-            secrets=d.get("secrets", []),
+            secrets=list(d.get("secrets", [])),
             isolation=isolation,
             container_image=d.get("container_image", ""),
         )

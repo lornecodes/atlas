@@ -23,6 +23,7 @@ from atlas.cli.formatting import (
 )
 from atlas.cli.orchestrator_commands import orch_app
 from atlas.cli.pool_commands import pool_app
+from atlas.cli.registry_commands import registry_app
 from atlas.cli.security_commands import security_app
 from atlas.cli.skill_commands import skill_app
 from atlas.cli.trigger_commands import trigger_app
@@ -37,6 +38,7 @@ app.add_typer(orch_app, name="orchestrator")
 app.add_typer(trigger_app, name="trigger")
 app.add_typer(security_app, name="security")
 app.add_typer(skill_app, name="skill")
+app.add_typer(registry_app, name="registry")
 
 
 def _get_registry(agents_path: str):
@@ -214,6 +216,13 @@ def serve(
     knowledge: str | None = typer.Option(None, "--knowledge", help="Directory path for file-based knowledge store"),
     knowledge_url: str | None = typer.Option(None, "--knowledge-url", help="HTTP URL for external knowledge provider"),
     knowledge_policy: str | None = typer.Option(None, "--knowledge-policy", help="Path to knowledge ACL policy YAML"),
+    registry_path: str | None = typer.Option(None, "--registry", help="Directory path for file-based agent registry"),
+    gpu_count: int = typer.Option(0, "--gpus", help="Number of GPUs available in the pool"),
+    gpu_vram: str | None = typer.Option(None, "--gpu-vram", help="VRAM per GPU in GB, comma-separated (e.g. '16,24')"),
+    pool_memory: int = typer.Option(0, "--pool-memory", help="Total pool memory in GB (0=no tracking)"),
+    pool_cpus: int = typer.Option(0, "--pool-cpus", help="Total pool CPU cores (0=no tracking)"),
+    pool_arch: str = typer.Option("any", "--pool-arch", help="Pool architecture (x86_64, arm64, any)"),
+    pool_devices: list[str] | None = typer.Option(None, "--pool-device", help="Available device paths"),
 ) -> None:
     """Start the HTTP API server with an execution pool."""
     try:
@@ -314,6 +323,23 @@ def serve(
                 know_policy = KnowledgeACL.from_dict(_yaml.safe_load(f))
             typer.echo(f"Knowledge ACL policy loaded from {knowledge_policy}")
 
+        # Set up hardware inventory if any hardware flags are specified
+        hw_inventory = None
+        if gpu_count or pool_memory or pool_cpus or pool_arch != "any" or pool_devices:
+            from atlas.pool.hardware import HardwareInventory
+            vram_list = []
+            if gpu_vram:
+                vram_list = [int(v.strip()) for v in gpu_vram.split(",")]
+            hw_inventory = HardwareInventory(
+                total_gpus=gpu_count,
+                gpu_vram_gb=vram_list,
+                total_memory_gb=pool_memory,
+                total_cpu_cores=pool_cpus,
+                architecture=pool_arch,
+                available_devices=list(pool_devices) if pool_devices else [],
+            )
+            typer.echo(f"Hardware inventory: {gpu_count} GPU(s), {pool_memory}GB RAM, {pool_cpus} CPU(s), arch={pool_arch}")
+
         queue = JobQueue(store=store, event_bus=bus)
         pool = ExecutionPool(
             registry, queue,
@@ -325,6 +351,7 @@ def serve(
             memory_provider=mem_provider,
             knowledge_provider=know_provider,
             knowledge_policy=know_policy,
+            hardware=hw_inventory,
         )
 
         # Register platform tools (needs pool to exist first)
@@ -396,6 +423,13 @@ def serve(
                 if count:
                     typer.echo(f"Loaded {count} trigger(s) from {triggers_path}")
 
+        # Set up file-based agent registry if configured
+        file_reg_provider = None
+        if registry_path:
+            from atlas.registry.file_provider import FileRegistryProvider
+            file_reg_provider = FileRegistryProvider(registry_path)
+            typer.echo(f"Agent registry: {registry_path}")
+
         app = create_app(
             registry, queue, pool, store, event_bus=bus,
             chain_executor=chain_executor,
@@ -403,6 +437,7 @@ def serve(
             trigger_scheduler=trigger_scheduler,
             security_policy=sec_policy,
             skill_registry=skill_registry,
+            file_registry_provider=file_reg_provider,
         )
         await pool.start()
         await trigger_scheduler.start()

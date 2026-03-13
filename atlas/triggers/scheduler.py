@@ -44,7 +44,7 @@ class TriggerScheduler:
         self._event_bus = event_bus
         self._poll_interval = poll_interval
         self._task: asyncio.Task | None = None
-        self._ticking = False
+        self._tick_lock = asyncio.Lock()
         self._running = False
 
     @property
@@ -82,10 +82,9 @@ class TriggerScheduler:
 
     async def _tick(self) -> None:
         """Check for due triggers and fire them."""
-        if self._ticking:
+        if self._tick_lock.locked():
             return  # previous tick still running
-        self._ticking = True
-        try:
+        async with self._tick_lock:
             now = time.time()
             due = await self._store.list_due(before=now)
             for trigger in due:
@@ -108,8 +107,6 @@ class TriggerScheduler:
                     )
                 except Exception:
                     logger.exception("Failed to fire trigger %s", trigger.id)
-        finally:
-            self._ticking = False
 
     async def _fire(self, trigger: TriggerDefinition) -> str:
         """Create and submit a job from a trigger definition. Returns job ID."""

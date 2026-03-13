@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11+-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/tests-1137_passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1382_passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/async-first-purple" alt="Async">
 </p>
@@ -57,7 +57,7 @@ This is the same idea that made Docker work for applications, npm for packages, 
 
 ## What Atlas Does Today
 
-Atlas is in active development. Here's what's shipped and working (1137 tests).
+Atlas is in active development. Here's what's shipped and working (1382 tests, 117 E2E).
 
 ### Typed Agent Contracts
 
@@ -182,16 +182,68 @@ m["warm_hit_rate"]           # 0.87
 m["jobs_by_status"]          # {"completed": 1500, "failed": 12}
 ```
 
-### Agent Spawning
+### Agent Spawning & Fan-Out Decomposition
 
-Agents can spawn child agents during execution — tracked as child jobs with parent references and depth limits.
+Agents can spawn child agents during execution — fan-out work across the pool, then collect results. Child jobs are tracked with parent references, depth limits prevent infinite recursion, and permissions are enforced at the contract level.
+
+```yaml
+# agents/decomposer/agent.yaml
+agent:
+  name: decomposer
+  version: "1.0.0"
+  requires:
+    spawn_agents: true   # opt-in to spawning
+  input:
+    schema:
+      type: object
+      properties:
+        messages: { type: array, items: { type: string } }
+      required: [messages]
+  output:
+    schema:
+      type: object
+      properties:
+        results: { type: array }
+        count: { type: integer }
+      required: [results, count]
+```
 
 ```python
-class DecomposerAgent(AgentBase):
+# agents/decomposer/agent.py
+class Agent(AgentBase):
     async def execute(self, input_data: dict) -> dict:
-        child = await self.context.spawn("sub-agent", {"chunk": input_data["text"][:1000]})
-        return {"result": child.output}
+        results = []
+        for msg in input_data["messages"]:
+            # Each spawn() submits a child job to the pool,
+            # blocks until it completes, and returns the result
+            result = await self.context.spawn("echo", {"message": msg})
+            results.append({"success": result.success, "data": result.data})
+        return {"results": results, "count": len(results)}
 ```
+
+The splitting architecture:
+
+```mermaid
+flowchart TD
+    Parent[Parent Job<br/><i>decomposer</i>] --> Split{Split input<br/>into N items}
+    Split --> S1[spawn echo<br/>item 1]
+    Split --> S2[spawn echo<br/>item 2]
+    Split --> SN[spawn echo<br/>item N]
+    S1 --> Q[JobQueue]
+    S2 --> Q
+    SN --> Q
+    Q --> Pool[ExecutionPool<br/><i>bounded by max_concurrent</i>]
+    Pool --> C1[Child completes]
+    Pool --> C2[Child completes]
+    Pool --> CN[Child completes]
+    C1 & C2 & CN --> Collect[Parent collects<br/>SpawnResults]
+    Collect --> Done[Parent returns<br/>aggregated output]
+```
+
+**Guards:**
+- **Permission** — only agents with `requires.spawn_agents: true` can call `context.spawn()`
+- **Depth limit** — max 3 levels deep (configurable), prevents infinite recursion
+- **Queue coordination** — children flow through the same `JobQueue` and `ExecutionPool` as top-level jobs
 
 ### Eval Hooks
 
@@ -454,6 +506,70 @@ atlas serve --agents ./agents --knowledge-url http://localhost:9000/knowledge
 atlas serve --agents ./agents --knowledge ./knowledge --knowledge-policy policy.yaml
 ```
 
+### Agent Marketplace
+
+Package, publish, and pull agents across instances. File-based registries work locally with zero infrastructure; HTTP registries let teams share agents across the network. Agents declare dependencies on other agents in their contracts — the pool checks these before execution.
+
+```yaml
+agent:
+  name: pipeline-agent
+  requires:
+    agents:
+      - translator                        # any version
+      - name: summarizer
+        version: ">=1.0.0"               # semver range
+```
+
+```bash
+# Configure registries
+atlas registry add local --file ./my-registry
+atlas registry add team --http https://atlas.example.com/api/registry --token $TOKEN
+
+# Publish and pull
+atlas registry publish ./agents/echo --registry local
+atlas registry pull translator --version ">=1.0.0"
+atlas registry search "text-processing"
+
+# Serve as a registry for other instances
+atlas serve --agents ./agents --registry ./my-registry
+```
+
+Two pluggable providers:
+
+- **File** — directory-based, zero config (manifest.json + package.tar.gz per version)
+- **HTTP** — REST client for remote registries (any Atlas instance with `--registry` becomes one)
+
+Dependencies are checked at job submission — if an agent requires `translator` and it's not registered, the job fails with a clear error and install hint. No auto-install; explicit `atlas registry pull` keeps behavior predictable.
+
+### Hardware Scheduling
+
+Agents declare hardware requirements in their contracts. The pool tracks capacity and gates job execution on resource availability — GPU-hungry agents get clear errors instead of silent failures when resources are exhausted.
+
+```yaml
+agent:
+  name: vision-model
+  hardware:
+    gpu: true
+    gpu_vram_gb: 16
+    min_memory_gb: 32
+    min_cpu_cores: 4
+    architecture: x86_64
+```
+
+```bash
+# Start pool with hardware inventory
+atlas serve --agents ./agents --gpus 2 --gpu-vram 16,24 \
+    --pool-memory 128 --pool-cpus 32 --pool-arch x86_64
+```
+
+Resources are allocated per-slot and released when slots return to the warm pool or are destroyed. The health endpoint reports live capacity:
+
+```json
+GET /api/health → { "hardware": { "total_gpus": 2, "free_gpus": 1, ... } }
+```
+
+No hardware flags = no tracking. Agents without hardware requirements are completely unaffected.
+
 ### Retry, Persistence, and Recovery
 
 Failed jobs auto-retry with configurable backoff. Jobs persist to SQLite and survive crashes — pending jobs reload on restart.
@@ -715,13 +831,8 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 | 10C | **Federated Chains** — `RemoteAgentProvider`, virtual agents in registry, `atlas.exec.run`, skill injection in chains |
 | 11 | **Dynamic Agents & Shared Memory** — exec provider (any language), llm provider (YAML-only), pluggable shared memory (file/HTTP) |
 | 12 | **Knowledge Base & Access Control** — pluggable knowledge providers (file/MCP/HTTP), domain-scoped permissions, agent-level read/write ACLs, path traversal protection |
-
-### Next
-
-| Phase | What |
-|---|---|
-| 13 | **Agent Marketplace** — remote registries, agent publishing, cross-registry dependency resolution |
-| 14 | **Hardware Scheduling** — GPU/memory-aware slots, heterogeneous pools, resource reservation |
+| 13 | **Agent Marketplace** — package, publish, and pull agents across registries. File and HTTP registry providers, dependency resolution, CLI commands, server endpoints |
+| 14 | **Hardware Scheduling** — GPU/memory-aware slots, resource inventory tracking, hardware-gated job execution, health endpoint integration |
 
 ---
 
@@ -729,6 +840,7 @@ result = await queue.wait_for_terminal(job.id, timeout=10.0)
 
 - **[Architecture](docs/ARCHITECTURE.md)** — technical deep-dive, diagrams, module map
 - **[Contributing](CONTRIBUTING.md)** — development setup, testing, how to add agents
+- **[Demos](demos/)** — 5 runnable demos (pipeline, triggers, hardware scheduling, MCP server, knowledge)
 - **[Example agents](agents/)** — 19 reference implementations (Python, exec, YAML-only LLM)
 - **[Example chains](chains/)** — multi-step pipeline definitions
 - **[Example triggers](triggers/)** — cron and webhook trigger definitions

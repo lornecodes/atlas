@@ -6,15 +6,18 @@ import asyncio
 import enum
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from atlas.contract.registry import AgentRegistry
+from atlas.contract.types import HardwareSpec
 from atlas.logging import get_logger
 from atlas.runtime.base import AgentBase
 from atlas.runtime.context import AgentContext
 
 if TYPE_CHECKING:
     from atlas.contract.permissions import PermissionsSpec
+    from atlas.pool.hardware import HardwareInventory, ResourceAllocation
     from atlas.security.policy import SecurityPolicy
 
 logger = get_logger(__name__)
@@ -35,10 +38,16 @@ class AgentSlot:
 
     agent_name: str
     instance: AgentBase
+    slot_id: str = ""
+    hardware: Any = None  # ResourceAllocation | None
     created_at: float = field(default_factory=time.monotonic)
     last_used: float = field(default_factory=time.monotonic)
     jobs_completed: int = 0
     state: SlotState = SlotState.IDLE
+
+    def __post_init__(self):
+        if not self.slot_id:
+            self.slot_id = f"slot-{uuid4().hex[:8]}"
 
 
 class SlotManager:
@@ -55,11 +64,13 @@ class SlotManager:
         warm_pool_size: int = 2,
         warmup_timeout: float = 30.0,
         security_policy: "SecurityPolicy | None" = None,
+        hardware: "HardwareInventory | None" = None,
     ) -> None:
         self._registry = registry
         self._warm_pool_size = warm_pool_size
         self._warmup_timeout = warmup_timeout
         self._security_policy = security_policy
+        self._hardware = hardware
         self._warm_slots: dict[str, list[AgentSlot]] = {}
         self._lock = asyncio.Lock()
 
@@ -69,17 +80,32 @@ class SlotManager:
         *,
         resolved_permissions: "PermissionsSpec | None" = None,
         secrets: dict[str, str] | None = None,
+        hardware_spec: HardwareSpec | None = None,
     ) -> tuple[AgentSlot, float]:
         """Get a warm slot or create a cold one. Returns (slot, warmup_ms).
 
         If resolved_permissions has isolation="container", creates a
         ContainerSlot instead of an in-process AgentSlot.
+
+        If hardware_spec is provided and a HardwareInventory is configured,
+        resources are allocated from the inventory for the slot.
         """
         # Container isolation path
         if resolved_permissions and resolved_permissions.isolation == "container":
             return await self._acquire_container(
-                agent_name, resolved_permissions, secrets or {}
+                agent_name, resolved_permissions, secrets or {},
+                hardware_spec=hardware_spec,
             )
+
+        # Hardware pre-check before acquiring any slot
+        if hardware_spec and self._hardware:
+            from atlas.pool.hardware import ResourceUnavailable
+            if not self._hardware.can_satisfy(hardware_spec):
+                from atlas.pool.hardware import describe_requirement
+                raise ResourceUnavailable(
+                    f"Insufficient hardware for {agent_name}: "
+                    f"{describe_requirement(hardware_spec)}"
+                )
 
         # Standard in-process path
         async with self._lock:
@@ -88,6 +114,11 @@ class SlotManager:
                 if slot.state == SlotState.IDLE:
                     slot.state = SlotState.BUSY
                     slot.last_used = time.monotonic()
+                    # Allocate hardware for reused slot
+                    if hardware_spec and self._hardware:
+                        slot.hardware = self._hardware.allocate(
+                            slot.slot_id, hardware_spec
+                        )
                     logger.debug("Reusing warm slot for %s", agent_name)
                     return slot, 0.0
 
@@ -112,6 +143,11 @@ class SlotManager:
         logger.debug("Cold start for %s took %.1fms", agent_name, warmup_ms)
 
         slot = AgentSlot(agent_name=agent_name, instance=instance, state=SlotState.BUSY)
+
+        # Allocate hardware for new slot
+        if hardware_spec and self._hardware:
+            slot.hardware = self._hardware.allocate(slot.slot_id, hardware_spec)
+
         return slot, warmup_ms
 
     async def _acquire_container(
@@ -119,6 +155,8 @@ class SlotManager:
         agent_name: str,
         permissions: "PermissionsSpec",
         secrets: dict[str, str],
+        *,
+        hardware_spec: HardwareSpec | None = None,
     ) -> tuple[AgentSlot, float]:
         """Create a ContainerSlot for isolated execution."""
         from atlas.security.container import ContainerSlot as DockerSlot
@@ -159,10 +197,20 @@ class SlotManager:
             instance=adapter,
             state=SlotState.BUSY,
         )
+
+        # Allocate hardware for container slot
+        if hardware_spec and self._hardware:
+            slot.hardware = self._hardware.allocate(slot.slot_id, hardware_spec)
+
         return slot, warmup_ms
 
     async def release(self, slot: AgentSlot) -> None:
         """Return a slot to the warm pool or destroy it."""
+        # Release hardware when slot goes idle
+        if slot.hardware and self._hardware:
+            self._hardware.release(slot.slot_id)
+            slot.hardware = None
+
         async with self._lock:
             slots = self._warm_slots.setdefault(slot.agent_name, [])
             idle_count = sum(1 for s in slots if s.state == SlotState.IDLE)
@@ -178,6 +226,11 @@ class SlotManager:
 
     async def destroy(self, slot: AgentSlot) -> None:
         """Shutdown and remove a slot."""
+        # Release hardware when slot is destroyed
+        if slot.hardware and self._hardware:
+            self._hardware.release(slot.slot_id)
+            slot.hardware = None
+
         await self._shutdown_slot(slot)
         async with self._lock:
             slots = self._warm_slots.get(slot.agent_name, [])
@@ -196,6 +249,11 @@ class SlotManager:
                         expired.append(slot)
         # Shutdown outside the lock so on_shutdown() doesn't block acquire/release
         for slot in expired:
+            # Hardware should already be released when slot went idle,
+            # but clean up just in case
+            if slot.hardware and self._hardware:
+                self._hardware.release(slot.slot_id)
+                slot.hardware = None
             await self._shutdown_slot(slot)
         return len(expired)
 
@@ -208,6 +266,9 @@ class SlotManager:
             self._warm_slots.clear()
         # Shutdown outside the lock
         for slot in all_slots:
+            if slot.hardware and self._hardware:
+                self._hardware.release(slot.slot_id)
+                slot.hardware = None
             await self._shutdown_slot(slot)
 
     async def _shutdown_slot(self, slot: AgentSlot) -> None:

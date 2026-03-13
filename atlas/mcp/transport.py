@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -39,8 +40,17 @@ def make_mcp_app(
     mcp_server = create_mcp_server(skill_registry)
     sse_transport = SseServerTransport("/messages/")
 
-    # Session registry — maps session_id → transport
-    _sessions: dict[str, StreamableHTTPServerTransport] = {}
+    # Session registry — maps session_id → (transport, created_at)
+    _sessions: dict[str, tuple[StreamableHTTPServerTransport, float]] = {}
+    _SESSION_TTL = 300.0  # 5 minutes
+
+    def _reap_stale_sessions():
+        now = time.monotonic()
+        stale = [sid for sid, (_, created) in _sessions.items()
+                 if now - created > _SESSION_TTL]
+        for sid in stale:
+            _sessions.pop(sid, None)
+            logger.debug("Reaped stale MCP session: %s", sid)
 
     # ── Streamable HTTP handler ──────────────────────────────────────
     async def handle_streamable(scope, receive, send):
@@ -53,8 +63,10 @@ def make_mcp_app(
         headers = dict(scope.get("headers", []))
         session_id = headers.get(b"mcp-session-id", b"").decode() or None
 
+        _reap_stale_sessions()
+
         if session_id and session_id in _sessions:
-            transport = _sessions[session_id]
+            transport, _ = _sessions[session_id]
             await transport.handle_request(scope, receive, send)
             return
 
@@ -64,7 +76,7 @@ def make_mcp_app(
             mcp_session_id=session_id,
             is_json_response_enabled=True,
         )
-        _sessions[session_id] = transport
+        _sessions[session_id] = (transport, time.monotonic())
 
         async def _run_session():
             logger.debug("Streamable HTTP session started: %s", session_id)

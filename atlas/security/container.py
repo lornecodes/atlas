@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+from pathlib import Path
 from typing import Any
 
 from atlas.contract.permissions import PermissionsSpec
@@ -154,10 +155,15 @@ class ContainerSlot:
 
         # Working directory mount (read-only unless write permission)
         if self._working_dir:
+            if ".." in Path(self._working_dir).parts:
+                raise ContainerError(
+                    f"working_dir must not contain '..': {self._working_dir}"
+                )
+            wd = self._working_dir
             if "write" in self._permissions.filesystem:
-                cmd.extend(["-v", f"{self._working_dir}:/workspace"])
+                cmd.extend(["-v", f"{wd}:/workspace"])
             elif "read" in self._permissions.filesystem:
-                cmd.extend(["-v", f"{self._working_dir}:/workspace:ro"])
+                cmd.extend(["-v", f"{wd}:/workspace:ro"])
             cmd.extend(["-w", "/workspace"])
 
         cmd.append(self._image)

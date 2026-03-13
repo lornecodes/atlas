@@ -371,77 +371,245 @@ Agents opt in via `requires.platform_tools: true`.
 
 ---
 
+## Agent Spawning & Fan-Out
+
+Agents can decompose work by spawning child agents during execution. The decomposer pattern fans out input across multiple child jobs, then collects results.
+
+### Spawn Flow
+
+```mermaid
+sequenceDiagram
+    participant Parent as Parent Agent
+    participant Ctx as AgentContext
+    participant Q as JobQueue
+    participant Pool as ExecutionPool
+    participant Child as Child Agent
+
+    Parent->>Ctx: spawn("echo", {msg})
+    Ctx->>Ctx: Check spawn_allowed + depth < max_depth
+    Ctx->>Q: submit(child JobData, depth+1)
+    Q->>Pool: dequeue child
+    Pool->>Child: execute()
+    Child-->>Pool: result
+    Pool-->>Q: status = completed
+    Q-->>Ctx: wait_for_terminal returns
+    Ctx-->>Parent: SpawnResult(success, data)
+```
+
+### Guards
+
+- **Permission** — only agents with `requires.spawn_agents: true` in their contract can call `context.spawn()`. Enforced in `AgentContext.spawn()`.
+- **Depth limit** — default max depth of 3, configurable via `AgentContext.max_depth`. Each child increments `_spawn_depth` in metadata.
+- **Queue coordination** — children flow through the same `JobQueue` and `ExecutionPool` as top-level jobs, bounded by the same `max_concurrent` semaphore.
+
+### Spawn Callback Injection
+
+The `ExecutionPool` injects a spawn callback into the `AgentContext` before execution. This callback:
+
+1. Creates a child `JobData` with incremented depth and parent trace ID in metadata
+2. Submits it to the queue
+3. Blocks on `queue.wait_for_terminal()` until the child reaches a terminal state
+4. Returns `SpawnResult(success=True/False, data=..., error=...)`
+
+Children execute in parallel (bounded by pool concurrency), but each parent waits for its spawned children sequentially.
+
+---
+
+## Dynamic Agent Providers
+
+Atlas supports three provider types — all discovered, registered, and executed identically through the same pool and registry.
+
+### Provider Types
+
+| Provider | Implementation | Use Case |
+|---|---|---|
+| `python` (default) | `AgentBase` subclass in `agent.py` | Full Python control |
+| `exec` | External process, JSON on stdin/stdout | Any language (Rust, Go, Node, shell) |
+| `llm` | Pure YAML, no code | LLM agents with system prompt + tools |
+
+### Exec Provider (`runtime/exec_agent.py`)
+
+Runs any executable as an agent. The runtime sends a JSON envelope on stdin:
+
+```json
+{"input": {...}, "context": {...}, "memory": "..."}
+```
+
+The agent process writes JSON to stdout. Memory writes return via `_memory_append` key. Knowledge writes via `_knowledge_store` key.
+
+### LLM Provider (`runtime/dynamic_llm_agent.py`)
+
+Defines LLM agents in pure YAML — system prompt, model preference, output format. Skills declared in `requires.skills` are automatically exposed as tools. The runtime handles the tool-use loop internally.
+
+---
+
+## Hardware Scheduling
+
+Agents declare hardware requirements in their contracts. The pool tracks a hardware inventory and gates job execution on resource availability.
+
+### Allocation Flow
+
+```mermaid
+flowchart TD
+    Job[Job submitted] --> Check{can_satisfy<br/>HardwareSpec?}
+    Check -->|Yes| Alloc[allocate slot_id, spec<br/>GPUs + memory + CPU reserved]
+    Check -->|No| Fail[ResourceUnavailable]
+    Alloc --> Exec[Agent executes]
+    Exec --> Release[release slot_id<br/>resources returned to pool]
+```
+
+### HardwareInventory
+
+Tracks total and free resources: GPUs (with per-GPU VRAM), system memory, CPU cores, architecture, and available devices. Allocation is per-slot — resources are reserved when a slot is acquired and released when the slot is returned or destroyed.
+
+### Constraint Checks
+
+| Constraint | Check |
+|---|---|
+| GPU count | `free_gpus >= 1` when `gpu: true` |
+| VRAM | At least one free GPU with `vram_gb >= gpu_vram_gb` |
+| Memory | `free_memory_gb >= min_memory_gb` |
+| CPU cores | `free_cpu_cores >= min_cpu_cores` |
+| Architecture | `architecture` matches or is `"any"` |
+| Device access | All `device_access` entries in `available_devices` |
+
+---
+
+## Knowledge & Memory
+
+Two orthogonal systems for agent learning:
+
+### Shared Memory
+
+"What happened this session" — agents opt in with `requires.memory: true`. All participating agents share a memory pool that persists across executions.
+
+- **FileMemoryProvider** — local markdown file (`memory.md`)
+- **HttpMemoryProvider** — REST hook for external systems (Redis, vector DB)
+
+For `exec` agents, memory arrives in the stdin envelope. For `llm` agents, memory is injected into the system prompt.
+
+### Knowledge Base
+
+"What do we know about X" — structured knowledge scoped by domain with per-agent ACLs.
+
+- **FileKnowledgeProvider** — markdown files with YAML frontmatter, organized by domain subdirectories
+- **HttpKnowledgeProvider** — REST hook for external knowledge systems
+- **MCPKnowledgeProvider** — delegates to an MCP server (e.g., Kronos vault)
+
+### Access Control
+
+Agents declare `read_domains` and `write_domains` in their contract. Protected domains block wildcard writes — an agent with `write_domains: ["*"]` can't write to a protected domain unless explicitly listed.
+
+---
+
+## Agent Marketplace
+
+Package, publish, and pull agents across registries. Two pluggable providers:
+
+- **FileRegistryProvider** — directory-based (manifest.json + package.tar.gz per version)
+- **HttpRegistryProvider** — REST client for remote Atlas instances
+
+Agents declare dependencies on other agents via `requires.agents` with optional semver ranges. Dependencies are checked at job submission — missing agents produce clear errors with install hints.
+
+---
+
 ## Module Map
 
 ```
 atlas/
 ├── contract/
-│   ├── registry.py      # AgentRegistry — discovery, semver, virtual agents
-│   ├── schema.py        # JSON Schema validation (validate_input, validate_output)
-│   ├── types.py         # AgentContract, SchemaSpec, RequiresSpec, PermissionsSpec
-│   └── permissions.py   # PermissionsSpec — file, network, subprocess, env scopes
+│   ├── registry.py        # AgentRegistry — discovery, semver, virtual agents
+│   ├── schema.py          # JSON Schema validation (validate_input, validate_output)
+│   ├── types.py           # AgentContract, SchemaSpec, HardwareSpec, RequiresSpec
+│   └── permissions.py     # PermissionsSpec — file, network, subprocess, env scopes
 ├── pool/
-│   ├── executor.py      # ExecutionPool — concurrency, warm slots, skill injection
-│   ├── job.py           # JobData — job record with status, timing, metadata
-│   ├── queue.py         # JobQueue — priority heap, backpressure, persistence
-│   └── slot_manager.py  # SlotManager — warm slot lifecycle (create/reuse/evict)
+│   ├── executor.py        # ExecutionPool — concurrency, warm slots, spawn, skill injection
+│   ├── job.py             # JobData — job record with status, timing, metadata
+│   ├── queue.py           # JobQueue — priority heap, backpressure, persistence
+│   ├── slot_manager.py    # SlotManager — warm slot lifecycle (create/reuse/evict)
+│   └── hardware.py        # HardwareInventory — GPU/memory/CPU tracking + allocation
 ├── chains/
-│   ├── definition.py    # ChainDefinition, ChainStep — YAML chain specs
-│   ├── runner.py        # ChainRunner — mediation + optional skill injection
-│   └── executor.py      # ChainExecutor — async chain execution with status tracking
+│   ├── definition.py      # ChainDefinition, ChainStep — YAML chain specs
+│   ├── runner.py          # ChainRunner — mediation + optional skill injection
+│   └── executor.py        # ChainExecutor — async chain execution with status tracking
 ├── orchestrator/
-│   ├── protocol.py      # Orchestrator protocol + RoutingDecision
-│   └── default.py       # DefaultOrchestrator (allow-all)
+│   ├── protocol.py        # Orchestrator protocol + RoutingDecision
+│   └── default.py         # DefaultOrchestrator (allow-all)
 ├── mediation/
-│   ├── engine.py        # MediationEngine — strategy cascade
-│   ├── strategies.py    # Direct, Mapped, Coerce, LLMBridge strategies
-│   └── analyzer.py      # Compatibility analysis between schemas
+│   ├── engine.py          # MediationEngine — strategy cascade
+│   ├── strategies.py      # Direct, Mapped, Coerce, LLMBridge strategies
+│   └── analyzer.py        # Compatibility analysis between schemas
 ├── runtime/
-│   ├── base.py          # AgentBase — abstract base class for all agents
-│   ├── context.py       # AgentContext — spawn, skills, chain data
-│   ├── runner.py        # run_agent() — standalone agent execution
-│   └── llm_agent.py     # LLMAgent — base class for LLM-powered agents
+│   ├── base.py            # AgentBase — abstract base class for all agents
+│   ├── context.py         # AgentContext — spawn, skills, memory, knowledge, chain data
+│   ├── runner.py          # run_agent() — standalone agent execution
+│   ├── llm_agent.py       # LLMAgent — base class for LLM-powered agents
+│   ├── dynamic_llm_agent.py # DynamicLLMAgent — YAML-only LLM agents (provider: llm)
+│   └── exec_agent.py      # ExecAgent — external process agents (provider: exec)
 ├── skills/
-│   ├── registry.py      # SkillRegistry — discovery + RegisteredSkill entries
-│   ├── resolver.py      # SkillResolver — resolve skill names to callables
-│   ├── platform.py      # PlatformToolProvider — 12 atlas.* platform tools
-│   ├── schema.py        # YAML loading + validation for skill.yaml
-│   └── types.py         # SkillSpec, SkillCallable, SkillError
+│   ├── registry.py        # SkillRegistry — discovery + RegisteredSkill entries
+│   ├── resolver.py        # SkillResolver — resolve skill names to callables
+│   ├── platform.py        # PlatformToolProvider — 12 atlas.* platform tools
+│   ├── schema.py          # YAML loading + validation for skill.yaml
+│   └── types.py           # SkillSpec, SkillCallable, SkillError
 ├── mcp/
-│   ├── server.py        # create_mcp_server() — wraps SkillRegistry as MCP tools
-│   ├── transport.py     # ASGI app — Streamable HTTP + SSE + health endpoint
-│   ├── auth.py          # BearerAuthMiddleware — timing-safe token validation
-│   ├── client.py        # RemoteToolProvider — connect to remote MCP, register skills
-│   ├── remote_agents.py # RemoteAgentProvider — virtual agents for federation
-│   └── stdio.py         # stdio transport for MCP
+│   ├── server.py          # create_mcp_server() — wraps SkillRegistry as MCP tools
+│   ├── transport.py       # ASGI app — Streamable HTTP + SSE + health endpoint
+│   ├── auth.py            # BearerAuthMiddleware — timing-safe token validation
+│   ├── client.py          # RemoteToolProvider — connect to remote MCP, register skills
+│   ├── remote_agents.py   # RemoteAgentProvider — virtual agents for federation
+│   └── stdio.py           # stdio transport for MCP
 ├── security/
-│   ├── policy.py        # SecurityPolicy — YAML-defined permission + secret rules
-│   └── secrets.py       # SecretResolver, EnvSecretProvider, FileSecretProvider
+│   ├── policy.py          # SecurityPolicy — YAML-defined permission + secret rules
+│   ├── protocol.py        # SecurityProvider protocol
+│   ├── container.py       # ContainerSlot — Docker container isolation for agents
+│   └── secrets.py         # SecretResolver, EnvSecretProvider, FileSecretProvider
+├── knowledge/
+│   ├── provider.py        # KnowledgeProvider protocol + KnowledgeEntry dataclass
+│   ├── acl.py             # KnowledgeACL — domain-scoped read/write access control
+│   ├── file_provider.py   # FileKnowledgeProvider — markdown + YAML frontmatter
+│   ├── http_provider.py   # HttpKnowledgeProvider — REST hook
+│   └── mcp_provider.py    # MCPKnowledgeProvider — delegates to MCP server
+├── memory/
+│   ├── provider.py        # MemoryProvider protocol
+│   ├── file_provider.py   # FileMemoryProvider — local markdown file
+│   └── http_provider.py   # HttpMemoryProvider — REST hook for external systems
+├── registry/
+│   ├── provider.py        # RegistryProvider protocol
+│   ├── config.py          # Registry configuration and CLI integration
+│   ├── resolver.py        # Dependency resolution for agent requirements
+│   ├── package.py         # Agent packaging (tar.gz + manifest)
+│   ├── file_provider.py   # FileRegistryProvider — directory-based marketplace
+│   └── http_provider.py   # HttpRegistryProvider — REST client for remote registries
 ├── llm/
-│   ├── provider.py      # LLMProvider protocol + LLMResponse
-│   ├── anthropic.py     # AnthropicProvider
-│   └── openai.py        # OpenAIProvider
+│   ├── provider.py        # LLMProvider protocol + LLMResponse
+│   ├── anthropic.py       # AnthropicProvider
+│   └── openai.py          # OpenAIProvider
 ├── triggers/
-│   ├── models.py        # TriggerDefinition — cron, interval, one_shot, webhook
-│   ├── cron.py          # CronExpr — lightweight 5-field cron parser
-│   ├── scheduler.py     # TriggerScheduler — async tick loop, fires due triggers
-│   └── routes.py        # HTTP routes for trigger CRUD + webhook endpoint
+│   ├── models.py          # TriggerDefinition — cron, interval, one_shot, webhook
+│   ├── cron.py            # CronExpr — lightweight 5-field cron parser
+│   ├── scheduler.py       # TriggerScheduler — async tick loop, fires due triggers
+│   └── routes.py          # HTTP routes for trigger CRUD + webhook endpoint
 ├── store/
-│   ├── job_store.py     # JobStore — SQLite persistence via aiosqlite
-│   └── trigger_store.py # TriggerStore — SQLite persistence for triggers
+│   ├── job_store.py       # JobStore — SQLite persistence via aiosqlite
+│   └── trigger_store.py   # TriggerStore — SQLite persistence for triggers
 ├── cli/
-│   ├── app.py           # Typer CLI — run, serve, mcp, list, inspect, validate
-│   ├── pool_commands.py # discover, run, serve commands
+│   ├── app.py             # Typer CLI — run, serve, mcp, list, inspect, validate
+│   ├── pool_commands.py   # discover, run, serve commands
+│   ├── registry_commands.py # registry add/publish/pull/search
 │   ├── orchestrator_commands.py # orchestrator list/set/reset
 │   ├── trigger_commands.py # trigger create/list/get/delete/enable/disable
 │   ├── security_commands.py # security policy validation
-│   ├── skill_commands.py    # skill list/inspect
-│   └── formatting.py    # Table and output formatting
-├── events.py            # EventBus — subscriber-isolated pub/sub
-├── metrics.py           # MetricsCollector — latency, throughput, warm hits
-├── trace.py             # TraceCollector + ExecutionTrace + cost estimation
-├── eval.py              # EvalRunner + EvalSubscriber + YAML eval definitions
-├── retry.py             # RetrySubscriber — backoff + resubmit
-├── serve.py             # aiohttp HTTP server
-└── ws.py                # WebSocket event streaming
+│   ├── skill_commands.py  # skill list/inspect
+│   └── formatting.py     # Table and output formatting
+├── app_keys.py            # aiohttp AppKey definitions for typed app state
+├── constants.py           # Shared constants
+├── logging.py             # Structured logging configuration
+├── events.py              # EventBus — subscriber-isolated pub/sub
+├── metrics.py             # MetricsCollector — latency, throughput, warm hits
+├── trace.py               # TraceCollector + ExecutionTrace + cost estimation
+├── eval.py                # EvalRunner + EvalSubscriber + YAML eval definitions
+├── retry.py               # RetrySubscriber — backoff + resubmit
+├── serve.py               # aiohttp HTTP server
+└── ws.py                  # WebSocket event streaming
 ```

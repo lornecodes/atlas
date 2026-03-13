@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy as _copy
 import json as _json
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,7 +20,7 @@ class SchemaSpec:
     __slots__ = ("_raw",)
 
     def __init__(self, raw: dict[str, Any] | None = None) -> None:
-        object.__setattr__(self, "_raw", raw or {})
+        object.__setattr__(self, "_raw", _copy.deepcopy(raw) if raw else {})
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError("SchemaSpec is immutable")
@@ -134,6 +135,24 @@ class KnowledgeRequirement:
 
 
 @dataclass(frozen=True)
+class AgentDependency:
+    """A dependency on another agent (for registry resolution)."""
+
+    name: str
+    version: str = "*"  # "*" = any, "1.2.0" = exact, ">=1.0.0" = range
+
+    @staticmethod
+    def from_dict(d: Any) -> AgentDependency:
+        if isinstance(d, str):
+            return AgentDependency(name=d)
+        if isinstance(d, dict):
+            return AgentDependency(
+                name=d["name"], version=d.get("version", "*")
+            )
+        raise ValueError(f"Invalid agent dependency: {d!r}")
+
+
+@dataclass(frozen=True)
 class RequiresSpec:
     """What the agent needs from the platform."""
 
@@ -142,17 +161,21 @@ class RequiresSpec:
     skills: list[str] = field(default_factory=list)
     memory: bool = False
     knowledge: KnowledgeRequirement = field(default_factory=KnowledgeRequirement)
+    agents: list[AgentDependency] = field(default_factory=list)
 
     @staticmethod
     def from_dict(d: dict[str, Any] | None) -> RequiresSpec:
         if not d:
             return RequiresSpec()
+        raw_agents = d.get("agents", [])
+        agents = [AgentDependency.from_dict(a) for a in raw_agents]
         return RequiresSpec(
             platform_tools=d.get("platform_tools", False),
             spawn_agents=d.get("spawn_agents", False),
             skills=d.get("skills", []),
             memory=d.get("memory", False),
             knowledge=KnowledgeRequirement.from_dict(d.get("knowledge")),
+            agents=agents,
         )
 
 

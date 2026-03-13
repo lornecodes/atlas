@@ -184,9 +184,13 @@ class AgentRegistry:
 
 
 def _semver_key(version: str) -> tuple[int, ...]:
-    """Parse semver string to tuple for sorting."""
+    """Parse semver string to tuple for sorting.
+
+    Strips pre-release (-beta) and build metadata (+build.123) before parsing.
+    """
     try:
-        return tuple(int(x) for x in version.split("."))
+        base = version.split("-")[0].split("+")[0]
+        return tuple(int(x) for x in base.split("."))
     except ValueError:
         return (0, 0, 0)
 

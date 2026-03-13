@@ -52,6 +52,22 @@ _CONTRACT_META_SCHEMA: dict[str, Any] = {
                         "spawn_agents": {"type": "boolean"},
                         "skills": {"type": "array", "items": {"type": "string"}},
                         "memory": {"type": "boolean"},
+                        "agents": {
+                            "type": "array",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "object",
+                                        "required": ["name"],
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "version": {"type": "string"},
+                                        },
+                                    },
+                                ],
+                            },
+                        },
                         "knowledge": {
                             "oneOf": [
                                 {"type": "boolean"},
@@ -83,7 +99,25 @@ _CONTRACT_META_SCHEMA: dict[str, Any] = {
                         },
                     ],
                 },
-                "hardware": {"type": "object"},
+                "hardware": {
+                    "type": "object",
+                    "properties": {
+                        "gpu": {"type": "boolean"},
+                        "gpu_vram_gb": {"type": "integer", "minimum": 0},
+                        "min_memory_gb": {"type": "integer", "minimum": 1},
+                        "min_cpu_cores": {"type": "integer", "minimum": 1},
+                        "architecture": {
+                            "type": "string",
+                            "enum": ["x86_64", "arm64", "any"],
+                        },
+                        "node_affinity": {"type": "string"},
+                        "device_access": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "additionalProperties": False,
+                },
             },
         },
     },

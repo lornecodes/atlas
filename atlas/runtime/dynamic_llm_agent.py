@@ -181,30 +181,33 @@ class DynamicLLMAgent(AgentBase):
             for block in tool_use_blocks:
                 tools_used.append(block.name)
 
-                if block.name == "memory_append" and self.context._memory_provider:
-                    entry = block.input.get("entry", "")
-                    await self.context.memory_append(entry)
-                    result_text = json.dumps({"status": "appended"})
-                elif block.name == "knowledge_store" and self.context._knowledge_provider:
-                    result_entry = await self.context.knowledge_store(
-                        content=block.input.get("content", ""),
-                        domain=block.input.get("domain", "general"),
-                        tags=block.input.get("tags", []),
-                    )
-                    result_text = json.dumps({"status": "stored", "id": result_entry.id})
-                elif block.name == "knowledge_search" and self.context._knowledge_provider:
-                    results = await self.context.knowledge_search(
-                        query=block.input.get("query", ""),
-                        domain=block.input.get("domain"),
-                        limit=block.input.get("limit", 10),
-                    )
-                    result_text = json.dumps([
-                        {"id": e.id, "domain": e.domain, "content": e.content, "tags": e.tags}
-                        for e in results
-                    ])
-                else:
-                    result = await self.context.skill(block.name, block.input)
-                    result_text = json.dumps(result)
+                try:
+                    if block.name == "memory_append" and self.context._memory_provider:
+                        entry = block.input.get("entry", "")
+                        await self.context.memory_append(entry)
+                        result_text = json.dumps({"status": "appended"})
+                    elif block.name == "knowledge_store" and self.context._knowledge_provider:
+                        result_entry = await self.context.knowledge_store(
+                            content=block.input.get("content", ""),
+                            domain=block.input.get("domain", "general"),
+                            tags=block.input.get("tags", []),
+                        )
+                        result_text = json.dumps({"status": "stored", "id": result_entry.id})
+                    elif block.name == "knowledge_search" and self.context._knowledge_provider:
+                        results = await self.context.knowledge_search(
+                            query=block.input.get("query", ""),
+                            domain=block.input.get("domain"),
+                            limit=block.input.get("limit", 10),
+                        )
+                        result_text = json.dumps([
+                            {"id": e.id, "domain": e.domain, "content": e.content, "tags": e.tags}
+                            for e in results
+                        ])
+                    else:
+                        result = await self.context.skill(block.name, block.input)
+                        result_text = json.dumps(result)
+                except Exception as e:
+                    result_text = json.dumps({"error": f"{type(e).__name__}: {e}"})
 
                 tool_results.append({
                     "type": "tool_result",

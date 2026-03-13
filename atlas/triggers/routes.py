@@ -148,9 +148,16 @@ async def _handle_webhook(request: web.Request) -> web.Response:
     if not trigger:
         return web.json_response({"error": "Webhook not found"}, status=404)
 
+    # Payload size limit
+    _MAX_WEBHOOK_BYTES = 1_048_576  # 1MB
+    if request.content_length and request.content_length > _MAX_WEBHOOK_BYTES:
+        return web.json_response({"error": "Payload too large"}, status=413)
+
     # HMAC validation
     if trigger.webhook_secret:
         body_bytes = await request.read()
+        if len(body_bytes) > _MAX_WEBHOOK_BYTES:
+            return web.json_response({"error": "Payload too large"}, status=413)
         signature = request.headers.get("X-Atlas-Signature", "")
         if not _validate_hmac(trigger.webhook_secret, body_bytes, signature):
             return web.json_response({"error": "Invalid signature"}, status=403)

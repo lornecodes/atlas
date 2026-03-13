@@ -42,19 +42,21 @@ class HttpMemoryProvider:
         import aiohttp
 
         async with aiohttp.ClientSession() as session:
-            await session.post(
+            resp = await session.post(
                 self._url,
                 headers=self._headers(),
                 json={"content": content, "action": "write"},
             )
+            resp.raise_for_status()
 
     async def append(self, entry: str) -> None:
         """POST an append action to the remote endpoint."""
         import aiohttp
 
         async with aiohttp.ClientSession() as session:
-            await session.post(
+            resp = await session.post(
                 self._url,
                 headers=self._headers(),
                 json={"content": entry, "action": "append"},
             )
+            resp.raise_for_status()

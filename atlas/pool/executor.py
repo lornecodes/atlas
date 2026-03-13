@@ -47,6 +47,7 @@ class ExecutionPool:
         memory_provider: Any = None,
         knowledge_provider: Any = None,
         knowledge_policy: Any = None,
+        hardware: Any = None,
     ) -> None:
         self._registry = registry
         self._queue = queue
@@ -59,12 +60,14 @@ class ExecutionPool:
         self._memory_provider = memory_provider
         self._knowledge_provider = knowledge_provider
         self._knowledge_policy = knowledge_policy
+        self._hardware = hardware
 
         self._slots = SlotManager(
             registry,
             warm_pool_size=warm_pool_size,
             warmup_timeout=warmup_timeout,
             security_policy=security_policy,
+            hardware=hardware,
         )
 
         self._running_tasks: set[asyncio.Task] = set()
@@ -137,9 +140,13 @@ class ExecutionPool:
                 if self._stopping:
                     break
                 await self._semaphore.acquire()
-                task = asyncio.create_task(self._run_job(job))
-                self._running_tasks.add(task)
-                task.add_done_callback(lambda t: self._on_task_done(t))
+                try:
+                    task = asyncio.create_task(self._run_job(job))
+                    self._running_tasks.add(task)
+                    task.add_done_callback(lambda t: self._on_task_done(t))
+                except Exception:
+                    self._semaphore.release()
+                    raise
         except asyncio.CancelledError:
             pass
 
@@ -187,8 +194,28 @@ class ExecutionPool:
             if decision.priority is not None:
                 job.priority = decision.priority
 
-            # Resolve permissions and secrets
+            # Resolve agent entry and check dependencies
             entry = self._registry.get(job.agent_name)
+
+            if entry and entry.contract.requires.agents:
+                missing = [
+                    dep.name
+                    for dep in entry.contract.requires.agents
+                    if dep.name not in self._registry
+                ]
+                if missing:
+                    await self._queue.update(
+                        job.id,
+                        status="failed",
+                        error=(
+                            f"Missing agent dependencies: {', '.join(missing)}. "
+                            f"Install with: atlas registry pull <name>"
+                        ),
+                        completed_at=time.time(),
+                    )
+                    return
+
+            # Resolve permissions and secrets
             resolved_perms = None
             resolved_secrets: dict[str, str] = {}
 
@@ -242,12 +269,37 @@ class ExecutionPool:
                         if rs.spec.name.startswith(PLATFORM_PREFIX) and rs.callable:
                             resolved_skills[rs.spec.name] = rs.callable
 
+            # Hardware pre-check
+            hardware_spec = entry.contract.hardware if entry else None
+            if hardware_spec and self._hardware:
+                from atlas.pool.hardware import ResourceUnavailable, describe_requirement
+                if not self._hardware.can_satisfy(hardware_spec):
+                    await self._queue.update(
+                        job.id,
+                        status="failed",
+                        error=(
+                            f"Insufficient hardware for {job.agent_name}: "
+                            f"{describe_requirement(hardware_spec)}"
+                        ),
+                        completed_at=time.time(),
+                    )
+                    return
+
             # Acquire a slot (warm or cold, or container if isolation=container)
             slot, warmup_ms = await self._slots.acquire(
                 job.agent_name,
                 resolved_permissions=resolved_perms,
                 secrets=resolved_secrets,
+                hardware_spec=hardware_spec,
             )
+
+            # Record hardware allocation in job metadata
+            if slot.hardware:
+                job.metadata["_hardware_allocation"] = {
+                    "gpu_devices": slot.hardware.gpu_devices,
+                    "memory_gb": slot.hardware.memory_gb,
+                    "cpu_cores": slot.hardware.cpu_cores,
+                }
 
             # Inject spawn context into the agent's context
             ctx = slot.instance.context

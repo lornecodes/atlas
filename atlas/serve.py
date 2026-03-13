@@ -35,9 +35,18 @@ from atlas.app_keys import (
     TRIGGER_STORE as _TRIGGER_STORE_KEY,
     SECURITY_POLICY as _SECURITY_POLICY_KEY,
     SKILL_REGISTRY as _SKILL_REGISTRY_KEY,
+    FILE_REGISTRY_PROVIDER as _FILE_REGISTRY_KEY,
 )
 
 logger = get_logger(__name__)
+
+
+def _clamp_limit(request: web.Request, default: int = 50, maximum: int = 1000) -> int:
+    """Parse and clamp the 'limit' query parameter."""
+    try:
+        return max(1, min(int(request.query.get("limit", default)), maximum))
+    except (ValueError, TypeError):
+        return default
 
 
 async def _handle_submit(request: web.Request) -> web.Response:
@@ -85,7 +94,7 @@ async def _handle_list_jobs(request: web.Request) -> web.Response:
 
     status_filter = request.query.get("status")
     agent_filter = request.query.get("agent")
-    limit = int(request.query.get("limit", 50))
+    limit = _clamp_limit(request)
 
     if store:
         jobs = await store.list(
@@ -116,12 +125,16 @@ async def _handle_cancel_job(request: web.Request) -> web.Response:
 async def _handle_health(request: web.Request) -> web.Response:
     """GET /api/health — pool health stats."""
     queue: JobQueue = request.app[_QUEUE_KEY]
-    return web.json_response({
+    response: dict[str, Any] = {
         "status": "ok",
         "pending": queue.pending_count,
         "running": queue.running_count,
         "capacity_remaining": queue.capacity_remaining,
-    })
+    }
+    pool: ExecutionPool = request.app[_POOL_KEY]
+    if pool._hardware:
+        response["hardware"] = pool._hardware.status()
+    return web.json_response(response)
 
 
 def _job_to_dict(job: JobData) -> dict[str, Any]:
@@ -195,7 +208,7 @@ async def _handle_list_chains(request: web.Request) -> web.Response:
         return web.json_response({"error": "Chain execution not available"}, status=503)
 
     status_filter = request.query.get("status")
-    limit = int(request.query.get("limit", 50))
+    limit = _clamp_limit(request)
     executions = executor.list(status=status_filter, limit=limit)
     return web.json_response([e.to_dict() for e in executions])
 
@@ -227,7 +240,7 @@ async def _handle_list_traces(request: web.Request) -> web.Response:
         return web.json_response({"error": "Traces not available"}, status=503)
 
     agent_filter = request.query.get("agent")
-    limit = int(request.query.get("limit", 50))
+    limit = _clamp_limit(request)
     traces = collector.list(limit=limit, agent_name=agent_filter)
     return web.json_response([t.to_dict() for t in traces])
 
@@ -314,6 +327,85 @@ async def _handle_list_skills(request: web.Request) -> web.Response:
     return web.json_response(skills)
 
 
+async def _handle_registry_search(request: web.Request) -> web.Response:
+    """GET /api/registry/search — search published agents."""
+    provider = request.app.get(_FILE_REGISTRY_KEY)
+    if not provider:
+        return web.json_response({"error": "Registry not configured"}, status=503)
+    query = request.query.get("q", "")
+    limit = _clamp_limit(request, default=20)
+    results = await provider.search(query, limit=limit)
+    return web.json_response([m.to_dict() for m in results])
+
+
+async def _handle_registry_versions(request: web.Request) -> web.Response:
+    """GET /api/registry/agents/{name}/versions — list agent versions."""
+    provider = request.app.get(_FILE_REGISTRY_KEY)
+    if not provider:
+        return web.json_response({"error": "Registry not configured"}, status=503)
+    name = request.match_info["name"]
+    versions = await provider.list_versions(name)
+    return web.json_response([m.to_dict() for m in versions])
+
+
+async def _handle_registry_metadata(request: web.Request) -> web.Response:
+    """GET /api/registry/agents/{name}/{version}/metadata"""
+    provider = request.app.get(_FILE_REGISTRY_KEY)
+    if not provider:
+        return web.json_response({"error": "Registry not configured"}, status=503)
+    name = request.match_info["name"]
+    version = request.match_info["version"]
+    meta = await provider.get_metadata(name, version)
+    if not meta:
+        return web.json_response({"error": "Not found"}, status=404)
+    return web.json_response(meta.to_dict())
+
+
+async def _handle_registry_download(request: web.Request) -> web.Response:
+    """GET /api/registry/agents/{name}/{version}/download"""
+    provider = request.app.get(_FILE_REGISTRY_KEY)
+    if not provider:
+        return web.json_response({"error": "Registry not configured"}, status=503)
+    name = request.match_info["name"]
+    version = request.match_info["version"]
+    data = await provider.download(name, version)
+    if not data:
+        return web.json_response({"error": "Not found"}, status=404)
+    return web.Response(body=data, content_type="application/gzip")
+
+
+async def _handle_registry_publish(request: web.Request) -> web.Response:
+    """POST /api/registry/agents/{name}/{version} — publish a package."""
+    provider = request.app.get(_FILE_REGISTRY_KEY)
+    if not provider:
+        return web.json_response({"error": "Registry not configured"}, status=503)
+
+    name = request.match_info["name"]
+    version = request.match_info["version"]
+
+    reader = await request.multipart()
+    metadata_raw = None
+    package_data = None
+
+    async for part in reader:
+        if part.name == "metadata":
+            import ast
+            metadata_raw = ast.literal_eval(await part.text())
+        elif part.name == "package":
+            package_data = await part.read()
+
+    if not metadata_raw or not package_data:
+        return web.json_response(
+            {"error": "Missing metadata or package fields"}, status=400
+        )
+
+    from atlas.registry.provider import PackageMetadata
+    metadata = PackageMetadata.from_dict(metadata_raw)
+
+    ok = await provider.publish(metadata, package_data)
+    return web.json_response({"published": ok})
+
+
 def create_app(
     registry: AgentRegistry,
     queue: JobQueue,
@@ -325,6 +417,7 @@ def create_app(
     trigger_scheduler: "TriggerScheduler | None" = None,
     security_policy: "SecurityPolicy | None" = None,
     skill_registry: Any = None,
+    file_registry_provider: Any = None,
 ) -> web.Application:
     """Create the aiohttp application with pool routes."""
     app = web.Application()
@@ -351,6 +444,9 @@ def create_app(
 
     if skill_registry:
         app[_SKILL_REGISTRY_KEY] = skill_registry
+
+    if file_registry_provider:
+        app[_FILE_REGISTRY_KEY] = file_registry_provider
 
     if chain_executor:
         app[_CHAIN_EXECUTOR_KEY] = chain_executor
@@ -397,5 +493,24 @@ def create_app(
 
     # Skill routes
     app.router.add_get("/api/skills", _handle_list_skills)
+
+    # Registry routes (only if file_registry_provider is configured)
+    if file_registry_provider:
+        app.router.add_get("/api/registry/search", _handle_registry_search)
+        app.router.add_get(
+            "/api/registry/agents/{name}/versions", _handle_registry_versions
+        )
+        app.router.add_get(
+            "/api/registry/agents/{name}/{version}/metadata",
+            _handle_registry_metadata,
+        )
+        app.router.add_get(
+            "/api/registry/agents/{name}/{version}/download",
+            _handle_registry_download,
+        )
+        app.router.add_post(
+            "/api/registry/agents/{name}/{version}",
+            _handle_registry_publish,
+        )
 
     return app
